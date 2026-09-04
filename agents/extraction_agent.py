@@ -12,6 +12,7 @@ from config.settings import settings
 from extraction.extractor import DocumentExtractor
 from extraction.sanitizer import scan_for_injection
 from extraction.provenance import verify_sources
+from extraction.financial_metrics import derive_monthly_credit_charge, derive_complementary_income
 from rule_engine.checks import RULES
 
 logger = logging.getLogger(__name__)
@@ -100,13 +101,39 @@ class ExtractionAgent:
             )
             raise
 
+        sources = verify_sources(
+            extraction_result["raw"], pages or [], document_path, document_sha256
+        )
+        if document_type == "releve" and extraction_result["data"].get("charge_mensuelle_credits") is None:
+            derived = derive_monthly_credit_charge(
+                extraction_result["data"].get("transactions"), pages or [],
+                document_path, document_sha256,
+            )
+            if derived:
+                extraction_result["data"]["charge_mensuelle_credits"] = derived["value"]
+                extraction_result["confidences"]["charge_mensuelle_credits"] = derived["confidence"]
+                extraction_result["raw"]["charge_mensuelle_credits"] = {
+                    "value": derived["value"], "confidence": derived["confidence"], "source": None,
+                }
+                sources["charge_mensuelle_credits"] = derived["source"]
+        if document_type == "releve" and extraction_result["data"].get("revenus_complementaires") is None:
+            derived = derive_complementary_income(
+                extraction_result["data"].get("transactions"), pages or [],
+                document_path, document_sha256,
+            )
+            if derived:
+                extraction_result["data"]["revenus_complementaires"] = derived["value"]
+                extraction_result["confidences"]["revenus_complementaires"] = derived["confidence"]
+                extraction_result["raw"]["revenus_complementaires"] = {
+                    "value": derived["value"], "confidence": derived["confidence"], "source": None,
+                }
+                sources["revenus_complementaires"] = derived["source"]
+
         logger.info("[ExtractionAgent] Extraction terminée.")
 
         return {
             **extraction_result,  # data / confidences / raw
-            "sources": verify_sources(
-                extraction_result["raw"], pages or [], document_path, document_sha256
-            ),
+            "sources": sources,
             "security": {
                 "suspicious": scan_result.suspicious,
                 "matched_patterns": scan_result.matched_patterns,

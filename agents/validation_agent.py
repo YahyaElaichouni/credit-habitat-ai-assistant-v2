@@ -82,9 +82,41 @@ class ValidationAgent:
             if decision["value"] is not None and not (decision["source"] or {}).get("verified"):
                 decision["status"] = "signale"
                 decision["reasons"].append("Provenance non vérifiée : contrôler le document original")
-            if decision["value"] is not None and (not rule_result["valid"] or security.get("suspicious")):
-                decision["status"] = "signale"
-                decision["reasons"].append("Anomalie de plausibilité ou de sécurité du document")
+            if decision["value"] is not None:
+                failed_rules = [
+                    rule for rule in rule_result.get("rules", [])
+                    if rule.get("passed") is False
+                    and (rule.get("rule") == name or str(rule.get("rule", "")).startswith(name + "_"))
+                ]
+                if failed_rules:
+                    decision["status"] = "signale"
+                    decision["reasons"].extend(
+                        "Contrôle métier : " + rule.get("message", rule.get("rule", "règle échouée"))
+                        for rule in failed_rules
+                    )
+                if security.get("suspicious"):
+                    decision["status"] = "signale"
+                    decision["reasons"].append("Alerte de sécurité : contenu documentaire suspect")
+
+        # Une ambiguïté explicite annule toute attribution automatique,
+        # indépendamment de la confiance déclarée par le modèle.
+        if document_type == "carte_identite" and data.get("identite_ambigue") is True:
+            candidates = data.get("noms_non_attribues") or []
+            for identity_field in ("nom", "prenom"):
+                decision = field_decisions.get(identity_field)
+                if decision is not None:
+                    decision["value"] = None
+                    decision["confidence"] = 0.0
+                    decision["source"] = None
+                    decision["status"] = "signale"
+                    candidate_text = (
+                        ", ".join(str(value) for value in candidates)
+                        if candidates else "textes OCR à vérifier"
+                    )
+                    decision["reasons"] = [
+                        "Nom et prénom non distinguables automatiquement sur cette carte",
+                        "Sélection manuelle obligatoire parmi : " + candidate_text,
+                    ]
 
         needs_priority_review = (
             security.get("suspicious", False)
@@ -168,6 +200,7 @@ class ValidationAgent:
 
             decisions[field_name] = {
                 "value": value,
+                "discrepancy": discrepancy,
                 "confidence": confidence,
                 "status": status,  # "pre_rempli" | "signale" | "absent"
                 "reasons": reasons,

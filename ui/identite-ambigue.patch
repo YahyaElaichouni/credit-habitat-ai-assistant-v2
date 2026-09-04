@@ -1,0 +1,130 @@
+--- a/extraction/prompts.py
++++ b/extraction/prompts.py
+@@
+ - date_expiration
++- identite_ambigue (booléen : true si les textes d'identité sont lisibles mais
++  qu'aucun libellé, aucune zone MRZ et aucune disposition suffisamment claire
++  ne permet de distinguer avec certitude le nom du prénom)
++- noms_non_attribues (liste des textes d'identité lisibles dont le rôle nom/prénom
++  reste incertain ; liste vide si identite_ambigue vaut false)
++
++Pour nom et prenom :
++- utilise les libellés français ou arabes, la disposition connue de la carte et
++  la zone MRZ seulement lorsqu'ils attribuent clairement chaque valeur ;
++- ne décide jamais selon l'apparence supposée d'un prénom ou d'un nom ;
++- si deux textes sont visibles mais leur rôle est incertain, retourne nom.value
++  et prenom.value à null, confidence à 0.0, source à null, puis retourne
++  identite_ambigue.value à true et place les textes dans noms_non_attribues ;
++- une simple proximité ou l'ordre produit par l'OCR ne suffit pas à lever
++  l'ambiguïté.
+ 
+ Si une information n'est pas présente dans le document,
+--- a/extraction/schema.py
++++ b/extraction/schema.py
+@@
+     date_expiration: ExtractedField[str] = Field(default_factory=ExtractedField)
++    # Métadonnées explicites : elles empêchent le modèle de forcer une
++    # attribution nom/prénom lorsque la carte ne la justifie pas.
++    identite_ambigue: ExtractedField[bool] = Field(default_factory=ExtractedField)
++    noms_non_attribues: ExtractedField[List[str]] = Field(default_factory=ExtractedField)
+ 
+ 
+ # =========================================================
+--- a/agents/validation_agent.py
++++ b/agents/validation_agent.py
+@@
+         for name, decision in field_decisions.items():
+             decision["source"] = (sources or {}).get(name)
+@@
+                 decision["reasons"].append("Anomalie de plausibilité ou de sécurité du document")
++
++        # Une attribution incertaine déclarée par l'extracteur ne peut jamais
++        # devenir fiable grâce à une forte confiance auto-déclarée. Les valeurs
++        # proposées sont retirées : le conseiller utilisera les textes candidats
++        # affichés dans l'interface pour saisir puis confirmer les deux champs.
++        if document_type == "carte_identite" and data.get("identite_ambigue") is True:
++            candidates = data.get("noms_non_attribues") or []
++            for identity_field in ("nom", "prenom"):
++                decision = field_decisions.get(identity_field)
++                if decision is not None:
++                    decision["value"] = None
++                    decision["confidence"] = 0.0
++                    decision["source"] = None
++                    decision["status"] = "signale"
++                    decision["reasons"] = [
++                        "Nom et prénom non distinguables automatiquement sur cette carte",
++                        "Sélection manuelle obligatoire parmi : " + (
++                            ", ".join(str(value) for value in candidates)
++                            if candidates else "textes OCR à vérifier"
++                        ),
++                    ]
+ 
+         needs_priority_review = (
+--- a/ui/document_review.py
++++ b/ui/document_review.py
+@@
+ LABELS = {
+@@
+ }
++IDENTITY_METADATA_FIELDS = {"identite_ambigue", "noms_non_attribues"}
+@@
+ def render_document_review(result, document_type, document_id, advisor_id, session_id, confirmations):
+     fields = result["validation_result"]["fields"]
+     st.caption("Aucune valeur n'est validée automatiquement. Vérifiez les justificatifs avant de confirmer.")
++    if document_type == "carte_identite" and (fields.get("identite_ambigue") or {}).get("value") is True:
++        candidates = (fields.get("noms_non_attribues") or {}).get("value") or []
++        suffix = " Textes détectés : " + ", ".join(map(str, candidates)) if candidates else ""
++        st.warning(
++            "Le nom et le prénom ne sont pas clairement identifiés sur la carte. "
++            "Saisissez-les manuellement après vérification." + suffix
++        )
+@@
+     for name, decision in fields.items():
++        if name in IDENTITY_METADATA_FIELDS:
++            continue
+         record = confirmations.get(name)
+--- /dev/null
++++ b/tests/test_identity_ambiguity.py
+@@
++from agents.validation_agent import ValidationAgent
++from extraction.schema import CarteIdentiteSchema, flatten, extract_confidences
++
++
++def verified(value):
++    return {"value": value, "confidence": 0.99,
++            "source": {"page": 1, "quote": str(value)}}
++
++
++def test_ambiguous_identity_never_prefills_name(monkeypatch):
++    model = CarteIdentiteSchema(
++        nom=verified("ALAOUI"), prenom=verified("YAHYA"),
++        identite_ambigue=verified(True),
++        noms_non_attribues=verified(["ALAOUI", "YAHYA"]),
++    )
++    agent = ValidationAgent()
++    monkeypatch.setattr(agent.engine, "validate", lambda *args: {"valid": True, "results": []})
++    result = agent.run(
++        "carte_identite", flatten(model), extract_confidences(model),
++        {"suspicious": False}, sources={name: {"verified": True}
++                                      for name in model.model_fields},
++    )
++    for name in ("nom", "prenom"):
++        assert result["fields"][name]["value"] is None
++        assert result["fields"][name]["status"] == "signale"
++    assert result["needs_priority_review"] is True
++
++
++def test_unambiguous_identity_keeps_normal_validation(monkeypatch):
++    model = CarteIdentiteSchema(
++        nom=verified("ALAOUI"), prenom=verified("YAHYA"),
++        identite_ambigue=verified(False), noms_non_attribues=verified([]),
++    )
++    agent = ValidationAgent()
++    monkeypatch.setattr(agent.engine, "validate", lambda *args: {"valid": True, "results": []})
++    result = agent.run(
++        "carte_identite", flatten(model), extract_confidences(model),
++        {"suspicious": False}, sources={name: {"verified": True}
++                                      for name in model.model_fields},
++    )
++    assert result["fields"]["nom"]["value"] == "ALAOUI"
++    assert result["fields"]["prenom"]["value"] == "YAHYA"

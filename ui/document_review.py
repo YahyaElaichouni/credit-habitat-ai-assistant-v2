@@ -18,6 +18,7 @@ LABELS = {
     "date_embauche": "Date d'embauche", "charge_mensuelle_credits": "Charges mensuelles de crédits (MAD)",
     "revenus_complementaires": "Revenus complémentaires mensuels (MAD)",
 }
+IDENTITY_METADATA_FIELDS = {"identite_ambigue", "noms_non_attribues"}
 
 
 def _numeric(document_type, field):
@@ -56,6 +57,8 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
         st.download_button("Consulter le document original", original.read_bytes(),
                            file_name=original.name, key=f"original_{document_id}")
     for name, decision in fields.items():
+        if name in IDENTITY_METADATA_FIELDS:
+            continue
         record = confirmations.get(name)
         confirmed = (isinstance(record, dict) and record.get("document_id") == document_id
                      and record.get("status") in ("confirme", "corrige"))
@@ -70,10 +73,41 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
                 st.caption(f"Document : {source['document']} — page {source['page']}")
                 st.text(source["quote"])
                 st.caption("Citation retrouvée dans l'OCR ; vérifiez qu'elle justifie réellement la valeur.")
+                evidence = source.get("evidence") or []
+                if evidence:
+                    st.caption("Opérations utilisées pour le calcul :")
+                    st.dataframe(
+                        [{
+                            "Date": item.get("date"), "Libellé": item.get("description"),
+                            "Montant (MAD)": item.get("montant"), "Page": item.get("page"),
+                            "Extrait OCR": item.get("quote"),
+                        } for item in evidence],
+                        hide_index=True, width="stretch",
+                    )
+                    if source.get("regularity_proven") is False:
+                        st.warning(
+                            "Montant observé sur un seul mois : son caractère régulier "
+                            "doit être confirmé par le conseiller."
+                        )
             else:
                 st.warning("Provenance non vérifiée. Consultez le document original avant toute saisie ou confirmation.")
+            discrepancy = decision.get("discrepancy")
+            if discrepancy and discrepancy.get("passed") is False:
+                declared = discrepancy.get("declared_value")
+                extracted = discrepancy.get("extracted_value")
+                difference = discrepancy.get("absolute_difference")
+                relative = discrepancy.get("relative_difference")
+                message = (
+                    f"Valeur déclarée : {declared:g} — Valeur extraite : {extracted:g} — "
+                    f"Différence : {difference:+g} ({relative:.1%})"
+                )
+                if discrepancy.get("severity") == "critique":
+                    st.error("Écart critique. " + message)
+                else:
+                    st.warning("Écart à vérifier. " + message)
             for reason in decision.get("reasons", []):
-                st.caption(reason)
+                if not reason.startswith("Écart "):
+                    st.caption(reason)
             key = f"review_value_{document_id}_{name}"
             if confirmed:
                 st.write("Valeur finale :", value)

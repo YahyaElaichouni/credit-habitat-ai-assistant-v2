@@ -31,6 +31,7 @@ from config.settings import settings
 from database import audit
 from extraction.schema import DOCUMENT_SCHEMAS
 from ui.document_review import render_declared_form, render_document_review
+from ui.client_summary import render_client_summary
 
 # =========================================================
 # CONFIGURATION
@@ -412,6 +413,7 @@ elif st.session_state.page == "Extraction":
     }
     
     if client_docs:
+        render_client_summary(client_docs)
         st.subheader("Documents du client")
         
         # Afficher les documents dans une grille

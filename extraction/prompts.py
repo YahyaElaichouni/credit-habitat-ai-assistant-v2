@@ -72,7 +72,7 @@ CARTE_IDENTITE_PROMPT = """
 Le document est une carte nationale d'identité.
 
 Extrais les informations suivantes (chacune au format
-{{"value": ..., "confidence": ...}}, voir règle 11) :
+{{"value": ..., "confidence": ..., "source": ...}}, voir règles 11 et 12) :
 
 - cin
 - nom
@@ -82,15 +82,79 @@ Extrais les informations suivantes (chacune au format
 - sexe
 - adresse
 - date_expiration
+- identite_ambigue
+- noms_non_attribues
 
-Si une information n'est pas présente dans le document,
-utilise value: null et confidence: 0.0.
+ASSOCIATION PAR LIBELLE
+
+Les libellés ci-dessous sont des variantes possibles, pas du texte à
+retrouver obligatoirement et pas une autorisation d'inventer une valeur :
+
+- cin : "CIN", "CNIE", "N°", "Nº", "Numéro de la carte",
+  "N° d'identité", "رقم البطاقة الوطنية", "رقم ب.ت.و."
+- nom : "Nom", "Nom de famille", "Surname", "الاسم العائلي", "النسب"
+- prenom : "Prénom", "Prénoms", "Given name", "الاسم الشخصي", "الاسم"
+- date_naissance : "Né(e) le", "Date de naissance", "Born on",
+  "تاريخ الازدياد", "تاريخ الميلاد", "ازداد(ت) في"
+- lieu_naissance : "Né(e) à", "Lieu de naissance", "Place of birth",
+  "مكان الازدياد", "مكان الميلاد", "بـ"
+- sexe : "Sexe", "Sex", "الجنس"
+- adresse : "Adresse", "Demeurant à", "Résidant à", "Address",
+  "العنوان", "الساكن(ة) بـ"
+- date_expiration : "Valable jusqu'au", "Valable jusqu’à",
+  "Valable jusqu'a", "Date d'expiration", "Expire le", "Valid until",
+  "صالحة إلى غاية", "صالحة لغاية", "تاريخ انتهاء الصلاحية"
+
+Les accents, apostrophes, espaces, ponctuations et petites erreurs OCR peuvent
+varier. Une variante proche reste acceptable seulement si le lien avec la
+valeur est clair.
+
+REGLES D'ATTRIBUTION
+
+1. Associe une valeur à un champ seulement si au moins une preuve fiable existe :
+   - un libellé reconnu sur la même ligne ;
+   - un libellé immédiatement voisin avec une disposition non ambiguë ;
+   - une zone MRZ conforme qui encode explicitement l'information ;
+   - une disposition connue de ce modèle de carte, seulement si la position
+     reste identifiable après OCR.
+2. Copie dans source.quote le libellé ET la valeur lorsqu'ils apparaissent
+   ensemble. Exemple : "Valable jusqu'au 15.06.2031".
+3. Ne choisis jamais une date uniquement parce qu'elle est la plus récente ou
+   future. Ne choisis jamais un numéro uniquement d'après sa longueur.
+4. Ne décide jamais qu'un texte est un prénom ou un nom selon son apparence,
+   sa fréquence, sa langue ou l'ordre arbitraire produit par l'OCR.
+5. Une valeur explicitement associée reste extractible même si le libellé
+   diffère du nom technique du champ. Par exemple :
+   "Valable jusqu'au 15.06.2031" -> date_expiration.value = "15.06.2031".
+6. Si une information est absente ou illisible, retourne value: null,
+   confidence: 0.0 et source: null.
+7. Si plusieurs valeurs sont lisibles mais qu'aucune preuve ne permet de
+   choisir celle du champ, retourne également value: null, confidence: 0.0
+   et source: null. Ne fabrique pas d'association.
+8. identite_ambigue concerne uniquement l'impossibilité de distinguer nom et
+   prénom. Dans ce cas, mets identite_ambigue.value à true, nom.value et
+   prenom.value à null, puis place les textes lisibles dans
+   noms_non_attribues.value. Sinon, identite_ambigue.value vaut false et
+   noms_non_attribues.value est une liste vide.
+9. Pour les autres ambiguïtés (plusieurs numéros, dates, lieux ou adresses),
+   garde le champ concerné à null. La confirmation humaine permettra de le
+   renseigner à partir du document original.
+
+EXEMPLES
+
+"Valable jusqu'au 15.06.2031"
+-> date_expiration.value = "15.06.2031"
+
+"Date de naissance : 12/04/2000"
+-> date_naissance.value = "12/04/2000"
+
+"12/04/2000  15/06/2031" sans libellé ni position fiable
+-> date_naissance.value = null et date_expiration.value = null
 
 Texte OCR :
 
 {ocr_text}
 """
-
 
 # =========================================================
 # BULLETIN DE SALAIRE
@@ -111,7 +175,6 @@ Extrais les informations suivantes (chacune au format
 - salaire_base
 - salaire_brut
 - salaire_net
-- salaire_net_a_payer
 - devise
 
 Ne confonds pas :
@@ -149,10 +212,10 @@ au format {{"value": ..., "confidence": ...}}, voir règle 11) :
 - solde_initial
 - solde_final
 - devise
-- charge_mensuelle_credits (charge mensuelle totale explicitement indiquée,
-  en MAD ; null si seul un ensemble de débits est présent)
-- revenus_complementaires (montant mensuel régulier explicitement indiqué,
-  en MAD ; null si la régularité ou le montant n'est pas explicite)
+- charge_mensuelle_credits : retourne toujours value: null. Le total sera
+  calculé côté serveur à partir des transactions de crédit prouvées.
+- revenus_complementaires : retourne toujours value: null. Le total sera
+  calculé côté serveur à partir des crédits complémentaires prouvés.
 
 Extrais aussi la liste "transactions". Pour chaque transaction,
 les champs restent au format simple (PAS de {{"value", "confidence"}}
@@ -162,12 +225,16 @@ pour les transactions individuelles) :
 - description
 - montant
 - type
+- page (numéro [PAGE n])
+- quote (ligne OCR exacte contenant la date, le libellé et le montant)
 
 Le type doit être "debit" ou "credit" lorsque
 l'information peut être déterminée directement
 à partir du document.
 
 Ne transforme pas une transaction en une autre.
+Le salaire est une transaction de type credit, mais il ne constitue jamais
+un revenu complémentaire. Conserve néanmoins cette transaction dans la liste.
 
 Si une information est absente ou illisible,
 utilise value: null et confidence: 0.0 (pour les champs racine)
@@ -227,10 +294,6 @@ DOCUMENT_PROMPTS = {
     "carte_identite": CARTE_IDENTITE_PROMPT,
 
     "bulletin": BULLETIN_PROMPT,
-
-    "attestation_salaire": BULLETIN_PROMPT.replace(
-        "un bulletin de salaire", "une attestation de salaire"
-    ),
 
     "releve": RELEVE_PROMPT,
 

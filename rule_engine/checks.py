@@ -288,8 +288,6 @@ RULES = {
 
     "bulletin": validate_bulletin,
 
-    "attestation_salaire": validate_bulletin,
-
     "releve": validate_releve,
 
     "compromis": validate_compromis

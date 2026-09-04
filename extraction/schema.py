@@ -62,6 +62,8 @@ class Transaction(BaseModel):
     description: Optional[str] = None
     montant: Optional[float] = None
     type: Optional[str] = None
+    page: Optional[int] = Field(default=None, ge=1, strict=True)
+    quote: Optional[str] = None
 
 
 # =========================================================
@@ -80,6 +82,8 @@ class CarteIdentiteSchema(BaseModel):
     sexe: ExtractedField[str] = Field(default_factory=ExtractedField)
     adresse: ExtractedField[str] = Field(default_factory=ExtractedField)
     date_expiration: ExtractedField[str] = Field(default_factory=ExtractedField)
+    identite_ambigue: ExtractedField[bool] = Field(default_factory=ExtractedField)
+    noms_non_attribues: ExtractedField[List[str]] = Field(default_factory=ExtractedField)
 
 
 # =========================================================
@@ -102,7 +106,6 @@ class BulletinSchema(BaseModel):
     salaire_base: ExtractedField[float] = Field(default_factory=ExtractedField)
     salaire_brut: ExtractedField[float] = Field(default_factory=ExtractedField)
     salaire_net: ExtractedField[float] = Field(default_factory=ExtractedField)
-    salaire_net_a_payer: ExtractedField[float] = Field(default_factory=ExtractedField)
 
     devise: ExtractedField[str] = Field(default_factory=ExtractedField)
 

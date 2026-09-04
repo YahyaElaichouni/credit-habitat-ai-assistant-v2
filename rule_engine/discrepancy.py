@@ -75,15 +75,26 @@ def check_discrepancy(
             ),
         }
 
+    declared = float(declared_value)
+    extracted = float(extracted_value)
     passed = ecart <= threshold
+    severity = "information" if passed else ("avertissement" if ecart <= 0.30 else "critique")
+    difference = extracted - declared
 
     return {
         "rule": f"ecart_{field_name}",
         "passed": passed,
+        "field": field_name,
+        "declared_value": declared,
+        "extracted_value": extracted,
+        "absolute_difference": difference,
+        "relative_difference": ecart,
+        "threshold": threshold,
+        "severity": severity,
         "message": (
-            f"Écart {field_name} : {ecart:.1%} "
-            f"({'conforme' if passed else 'à vérifier'}, "
-            f"seuil {threshold:.0%})"
+            f"Écart {field_name} : déclaré {declared:g}, extrait {extracted:g}, "
+            f"différence {difference:+g} ({ecart:.1%}) — "
+            f"{'conforme' if passed else severity}, seuil {threshold:.0%}"
         ),
     }
 

@@ -18,7 +18,6 @@ from extraction.schema import DOCUMENT_SCHEMAS, ExtractedField
 
 REQUIRED_FIELDS = {
     "bulletin": ("employeur", "salaire_net", "date_embauche"),
-    "attestation_salaire": ("employeur", "salaire_net", "date_embauche"),
     "releve": ("charge_mensuelle_credits",),
     "carte_identite": ("nom", "prenom", "date_naissance"),
     "compromis": (),
