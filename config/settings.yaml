@@ -1,0 +1,61 @@
+# ===========================================================
+# Configuration centrale
+# Projet PFE Crédit Agricole du Maroc
+# ===========================================================
+#
+# Toute valeur seuil/paramètre référencée dans le cahier des
+# charges (section 9.5) vit ici, jamais en dur dans le code.
+# Ces valeurs sont indicatives — ajustez-les pendant la recette
+# (mois 5), sans jamais retoucher le code source pour ça.
+
+extraction:
+  # EB-125 : en dessous de ce score, un champ extrait n'est
+  # jamais proposé comme fiable ; il est signalé pour
+  # vérification humaine plutôt que pré-rempli avec confiance.
+  confidence_threshold: 0.85
+
+  # EB-108 : écart entre valeur déclarée par l'utilisateur et
+  # valeur extraite du document. Au-delà, signalé comme point
+  # d'attention.
+  discrepancy_threshold: 0.10
+
+document:
+  # EB-219 : taille maximale d'une pièce déposée.
+  max_file_size_mb: 10
+
+  # Contrôle du type réel de fichier (pas seulement l'extension),
+  # vérifié via les octets magiques du fichier.
+  allowed_extensions:
+    - ".pdf"
+    - ".png"
+    - ".jpg"
+    - ".jpeg"
+
+llm:
+  model: "llama3:latest"
+
+ocr:
+  dpi: 300
+
+rag:
+  # Modèle d'embeddings local (sentence-transformers), multilingue,
+  # bon support du français — pas d'API externe.
+  embedding_model: "BAAI/bge-m3"
+
+  # Découpage des documents officiels avant vectorisation.
+  chunk_size: 800
+  chunk_overlap: 100
+
+  # Nombre de passages retournés par une recherche.
+  top_k: 5
+
+  # EB-103 : en dessous de ce score de similarité, la question est
+  # considérée hors périmètre — refus explicite et redirection vers
+  # un conseiller, plutôt qu'une réponse approximative.
+  similarity_threshold: 0.35
+
+paths:
+  documents_dir: "data/docs"
+  samples_dir: "data/samples"
+  database_path: "database/assistant.db"
+  vectorstore_dir: "rag/vectorstore"

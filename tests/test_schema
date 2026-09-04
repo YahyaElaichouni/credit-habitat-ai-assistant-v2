@@ -1,0 +1,72 @@
+from extraction.schema import (
+    CarteIdentiteSchema,
+    BulletinSchema,
+    ReleveBancaireSchema,
+    CompromisSchema
+)
+
+
+def test_carte_identite():
+
+    data = CarteIdentiteSchema(
+        cin="BE283061",
+        nom="Perrin",
+        prenom="Audrey",
+        date_naissance="03/12/2002",
+        lieu_naissance="Fes",
+        sexe="Homme",
+        nationalite="Marocaine"
+    )
+
+    print("\nCarte identité :")
+    print(data.model_dump_json(indent=4))
+
+
+def test_bulletin():
+
+    data = BulletinSchema(
+        nom="Perrin",
+        prenom="Audrey",
+        employeur="Entreprise Test",
+        salaire_brut=12000,
+        salaire_net=9500
+    )
+
+    print("\nBulletin :")
+    print(data.model_dump_json(indent=4))
+
+
+def test_releve():
+
+    data = ReleveBancaireSchema(
+        nom="Perrin",
+        prenom="Audrey",
+        banque="Banque Test",
+        solde_initial=10000,
+        solde_final=12500
+    )
+
+    print("\nRelevé :")
+    print(data.model_dump_json(indent=4))
+
+
+def test_compromis():
+
+    data = CompromisSchema(
+        vendeur_nom="Dupont",
+        acheteur_nom="Perrin",
+        adresse_bien="Rabat",
+        prix_vente=850000,
+        devise="MAD"
+    )
+
+    print("\nCompromis :")
+    print(data.model_dump_json(indent=4))
+
+
+if __name__ == "__main__":
+
+    test_carte_identite()
+    test_bulletin()
+    test_releve()
+    test_compromis()

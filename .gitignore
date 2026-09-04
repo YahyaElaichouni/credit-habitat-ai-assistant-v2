@@ -1,0 +1,50 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/
+
+# Environment variables
+.env
+*.env
+
+# SQLite
+*.db
+*.sqlite3
+
+# Fichiers uploadés temporairement par l'interface
+# Stockage d'exécution uniquement, ne doit pas être versionné
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Sessions temporaires
+data/sessions/
+
+# Logs
+logs/
+*.log
+
+# Streamlit
+.streamlit/
+
+# Archives et gros fichiers
+*.zip
+*.rar
+*.7z
+
+# Datasets locaux
+Dataset/
+
+# OS
+.DS_Store
+Thumbs.db
