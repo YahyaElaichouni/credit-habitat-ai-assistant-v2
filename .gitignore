@@ -34,8 +34,6 @@ data/sessions/
 logs/
 *.log
 
-# Streamlit
-.streamlit/
 
 # Archives et gros fichiers
 *.zip

@@ -1,0 +1,39 @@
+# Adapté du thème shadcn : palette bancaire, sans police distante.
+[theme]
+base = "light"
+font = "sans-serif"
+baseFontSize = 16
+headingFontSizes = ["34px", "26px", "20px", "18px", "16px", "14px"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+baseRadius = "10px"
+buttonRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = true
+
+[theme.light]
+primaryColor = "#08734E"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F6F5"
+textColor = "#182C25"
+borderColor = "#DCE5E0"
+linkColor = "#08734E"
+
+[theme.light.sidebar]
+backgroundColor = "#F3F6F5"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#182C25"
+borderColor = "#DCE5E0"
+
+[theme.dark]
+primaryColor = "#16805D"
+backgroundColor = "#101C17"
+secondaryBackgroundColor = "#1C2C24"
+textColor = "#E9F1EC"
+borderColor = "#354A3E"
+linkColor = "#83D5AC"
+
+[theme.dark.sidebar]
+backgroundColor = "#15231C"
+secondaryBackgroundColor = "#22362A"
+textColor = "#E9F1EC"
+borderColor = "#354A3E"

@@ -63,12 +63,175 @@ def get_orchestrator():
 # DESIGN - STYLES AMÉLIORÉS
 # =========================================================
 
+def inject_app_styles():
+    """Appliquer une identité visuelle moderne sans modifier les widgets métier."""
+    st.markdown(
+        """
+        <style>
+        :root {
+            --ca-green: #007a4d;
+            --ca-dark: #073b2c;
+            --ca-soft: #edf7f2;
+            --ca-border: rgba(15, 63, 47, 0.12);
+        }
+        .stApp {
+            background:
+                radial-gradient(circle at 86% 3%, rgba(0, 122, 77, .08), transparent 25rem),
+                #f7faf8;
+        }
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #073b2c 0%, #0a4b38 55%, #062f24 100%);
+            border-right: 0;
+        }
+        [data-testid="stSidebar"] * {
+            color: #f4fbf7;
+        }
+        [data-testid="stSidebar"] [data-baseweb="input"] > div {
+            background: rgba(255,255,255,.10);
+            border-color: rgba(255,255,255,.22);
+        }
+        [data-testid="stSidebar"] input {
+            color: #ffffff !important;
+        }
+        [data-testid="stSidebar"] hr {
+            border-color: rgba(255,255,255,.15);
+        }
+        [data-testid="stSidebar"] .stButton > button {
+            min-height: 2.75rem;
+            border-radius: .85rem;
+            border: 1px solid rgba(255,255,255,.16);
+            background: rgba(255,255,255,.06);
+            justify-content: flex-start;
+            transition: transform .16s ease, background .16s ease, border-color .16s ease;
+        }
+        [data-testid="stSidebar"] .stButton > button:hover {
+            transform: translateX(3px);
+            background: rgba(255,255,255,.14);
+            border-color: rgba(255,255,255,.30);
+        }
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+            background: #ffffff;
+            border-color: #ffffff;
+        }
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] * {
+            color: #073b2c !important;
+            font-weight: 700;
+        }
+        .block-container {
+            max-width: 1280px;
+            padding-top: 2rem;
+            padding-bottom: 3rem;
+        }
+        .ca-hero {
+            padding: 2.1rem 2.2rem;
+            border-radius: 1.35rem;
+            background: linear-gradient(120deg, #073b2c 0%, #007a4d 68%, #1d9d69 100%);
+            color: white;
+            box-shadow: 0 18px 46px rgba(7,59,44,.18);
+            margin-bottom: 1.4rem;
+        }
+        .ca-eyebrow {
+            font-size: .76rem;
+            font-weight: 800;
+            letter-spacing: .12em;
+            opacity: .78;
+            margin-bottom: .55rem;
+        }
+        .ca-hero h1 {
+            color: white;
+            font-size: clamp(2rem, 4vw, 3.2rem);
+            line-height: 1.05;
+            margin: 0 0 .7rem;
+        }
+        .ca-hero p {
+            max-width: 760px;
+            font-size: 1.05rem;
+            opacity: .9;
+            margin: 0;
+        }
+        .ca-section-title {
+            margin: 2.1rem 0 .25rem;
+            color: #073b2c;
+            font-size: 1.5rem;
+            font-weight: 800;
+        }
+        .ca-article {
+            min-height: 235px;
+            padding: 1.35rem;
+            border-radius: 1.1rem;
+            background: rgba(255,255,255,.92);
+            border: 1px solid var(--ca-border);
+            box-shadow: 0 10px 28px rgba(7,59,44,.07);
+        }
+        .ca-article:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 16px 36px rgba(7,59,44,.11);
+            transition: all .18s ease;
+        }
+        .ca-article .icon {
+            display: inline-grid;
+            place-items: center;
+            width: 2.55rem;
+            height: 2.55rem;
+            border-radius: .8rem;
+            background: var(--ca-soft);
+            font-size: 1.25rem;
+        }
+        .ca-article h3 {
+            color: #073b2c;
+            margin: .95rem 0 .45rem;
+            font-size: 1.08rem;
+        }
+        .ca-article p {
+            color: #52645d;
+            font-size: .92rem;
+            line-height: 1.55;
+        }
+        .ca-tag {
+            display: inline-block;
+            margin-top: .7rem;
+            color: #007a4d;
+            font-size: .78rem;
+            font-weight: 800;
+        }
+        div[data-testid="stMetric"] {
+            background: rgba(255,255,255,.92);
+            border: 1px solid var(--ca-border);
+            border-radius: 1rem;
+            padding: .75rem 1rem;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border-color: var(--ca-border);
+            border-radius: 1rem;
+            background: rgba(255,255,255,.88);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_header():
-    """Identité sobre ; les couleurs sont gérées par le thème natif."""
+    """Afficher l'identité institutionnelle."""
     logo = Path("assets/logo_ca.jpg")
     if logo.is_file():
-        st.logo(str(logo))
-    st.caption("CRÉDIT AGRICOLE DU MAROC  /  ESPACE CONSEILLER")
+        st.logo(str(logo), size="large")
+    st.caption("CRÉDIT AGRICOLE DU MAROC  ·  ESPACE CONSEILLER")
+
+
+def render_article_card(icon, title, text, tag):
+    """Afficher une carte éditoriale compacte sur l'accueil."""
+    st.markdown(
+        f"""
+        <article class="ca-article">
+            <div class="icon">{icon}</div>
+            <h3>{title}</h3>
+            <p>{text}</p>
+            <span class="ca-tag">{tag}</span>
+        </article>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =========================================================
@@ -228,12 +391,14 @@ if "last_error" not in st.session_state:
 # SIDEBAR AMÉLIORÉE AVEC GESTION CLIENT
 # =========================================================
 
+inject_app_styles()
+
 with st.sidebar:
-    st.caption("CRÉDIT HABITAT")
-    st.caption("Assistant documentaire · PFE 2026")
+    st.markdown("## Crédit Habitat")
+    st.caption("Assistant intelligent du conseiller")
+    st.divider()
 
-
-    st.subheader("Espace conseiller")
+    st.markdown("**Espace de travail**")
     
     advisor_id = st.text_input(
         "Identifiant conseiller",
@@ -247,7 +412,7 @@ with st.sidebar:
     st.divider()
     
     # Section Client
-    st.subheader("Dossier client")
+    st.markdown("**Dossier en cours**")
     
     client_id = st.text_input(
         "Identifiant client",
@@ -268,7 +433,7 @@ with st.sidebar:
     
     st.divider()
     
-    st.subheader("Navigation")
+    st.markdown("**Navigation**")
     
     if st.button("Accueil", icon=":material/home:", width="stretch", type="primary" if st.session_state.page == "Accueil" else "secondary", disabled=st.session_state.processing):
         st.session_state.page = "Accueil"
@@ -291,7 +456,7 @@ with st.sidebar:
 
 
     # Actions rapides
-    st.subheader("Session")
+    st.markdown("**Gestion de la session**")
     
     if st.button("💾 Sauvegarder la session", width="stretch"):
         if save_session_state():
@@ -351,39 +516,100 @@ render_header()
 # =========================================================
 
 if st.session_state.page == "Accueil":
-    st.title("Votre espace Crédit Habitat")
-    st.caption("Préparez les dossiers, vérifiez les justificatifs et consultez la documentation bancaire.")
-    if st.session_state.current_client_id:
-        st.badge(f"Client actif : {st.session_state.current_client_id}", icon=":material/person:", color="green")
-    else:
-        st.info("Renseignez un identifiant client dans le menu latéral pour analyser un document.", icon=":material/info:")
+    client_badge = (
+        f'<span class="ca-tag">Dossier actif · {st.session_state.current_client_id}</span>'
+        if st.session_state.current_client_id
+        else '<span class="ca-tag">Renseignez un client pour démarrer</span>'
+    )
+    st.markdown(
+        f"""
+        <section class="ca-hero">
+            <div class="ca-eyebrow">CRÉDIT HABITAT · PARCOURS ASSISTÉ</div>
+            <h1>Un dossier plus clair,<br>une décision mieux préparée.</h1>
+            <p>Centralisez les justificatifs, contrôlez les informations extraites
+            et retrouvez rapidement les réponses utiles dans la documentation bancaire.</p>
+            {client_badge}
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    left, right = st.columns(2, gap="large")
-    with left.container(border=True, height="stretch"):
-        st.subheader(":material/description: Analyse documentaire")
-        st.write("Transformez les pièces justificatives en informations structurées.")
-        st.caption("Déposer · Extraire · Vérifier · Exporter")
-        if st.button("Commencer l'analyse", icon=":material/arrow_forward:", type="primary", width="stretch"):
+    action_left, action_right = st.columns([1.15, 0.85], gap="large")
+    with action_left.container(border=True, height="stretch"):
+        st.markdown("### Préparer un dossier")
+        st.write("Déposez les justificatifs du client et vérifiez chaque donnée avant son export.")
+        st.caption("Pièce d'identité · Bulletin de paie · Relevé de compte · Compromis")
+        if st.button(
+            "Lancer une analyse",
+            icon=":material/arrow_forward:",
+            type="primary",
+            width="stretch",
+            disabled=st.session_state.processing,
+        ):
             st.session_state.page = "Extraction"
             st.rerun()
-    with right.container(border=True, height="stretch"):
-        st.subheader(":material/chat: Assistant documentaire")
-        st.write("Retrouvez les informations utiles dans les documents de référence.")
-        st.caption("Une réponse contextualisée, accompagnée de ses sources.")
-        if st.button("Poser une question", icon=":material/arrow_forward:", width="stretch"):
+
+    with action_right.container(border=True, height="stretch"):
+        st.markdown("### Consulter l'assistant")
+        st.write("Interrogez les documents de référence sur le crédit habitat.")
+        st.caption("Réponses contextualisées avec sources documentaires")
+        if st.button(
+            "Ouvrir l'assistant",
+            icon=":material/chat:",
+            width="stretch",
+            disabled=st.session_state.processing,
+        ):
             st.session_state.page = "Assistant"
             st.rerun()
 
-    st.subheader("Activité de la session")
+    st.markdown('<div class="ca-section-title">À découvrir</div>', unsafe_allow_html=True)
+    st.caption("Des repères simples pour mieux comprendre le parcours et préparer le projet immobilier.")
+    article_1, article_2, article_3 = st.columns(3, gap="medium")
+    with article_1:
+        render_article_card(
+            "🏠",
+            "Bien préparer son projet habitat",
+            "Budget, apport, durée et mensualité : les points à clarifier avant de constituer un dossier.",
+            "GUIDE PRATIQUE",
+        )
+    with article_2:
+        render_article_card(
+            "📄",
+            "Les pièces à fournir",
+            "Découvrez les justificatifs utiles et pourquoi leur lisibilité accélère l'étude du financement.",
+            "DOSSIER CLIENT",
+        )
+    with article_3:
+        render_article_card(
+            "🛡️",
+            "Comprendre l'étude du dossier",
+            "Revenus, charges et cohérence documentaire sont vérifiés avant toute décision du conseiller.",
+            "TRANSPARENCE",
+        )
+
+    if not st.session_state.current_client_id:
+        st.info(
+            "Pour commencer une analyse, saisissez l'identifiant du client dans la barre latérale.",
+            icon=":material/info:",
+        )
+
+    st.markdown('<div class="ca-section-title">Activité de la session</div>', unsafe_allow_html=True)
     docs = st.session_state.documents
     cols = st.columns(3)
     cols[0].metric("Documents déposés", len(docs), border=True)
-    cols[1].metric("Analyses terminées", sum(d.get("status") == "completed" for d in docs.values()), border=True)
+    cols[1].metric(
+        "Analyses terminées",
+        sum(d.get("status") == "completed" for d in docs.values()),
+        border=True,
+    )
     cols[2].metric("Questions posées", len(st.session_state.chat_history), border=True)
+
     with st.container(border=True):
         st.markdown("**La décision reste humaine**")
-        st.caption("L'assistant prépare les informations. Vérifiez les sources et confirmez les valeurs avant leur export.")
-
+        st.caption(
+            "L'assistant prépare et justifie les informations. Le conseiller vérifie "
+            "les sources et confirme les valeurs avant leur utilisation."
+        )
 
 
 # =========================================================
@@ -856,3 +1082,4 @@ if "error" in st.session_state:
         if st.button("Effacer l'erreur"):
             del st.session_state.error
             st.rerun()
+
