@@ -1,39 +1,29 @@
-# Adapté du thème shadcn : palette bancaire, sans police distante.
+# Thème institutionnel Crédit Agricole du Maroc
+# Copier ce fichier dans .streamlit/config.toml puis redémarrer Streamlit.
+
 [theme]
 base = "light"
+primaryColor = "#08734E"
+backgroundColor = "#F7FAF8"
+secondaryBackgroundColor = "#EDF4F0"
+textColor = "#17372C"
+linkColor = "#08734E"
+borderColor = "#D8E4DE"
 font = "sans-serif"
 baseFontSize = 16
 headingFontSizes = ["34px", "26px", "20px", "18px", "16px", "14px"]
-headingFontWeights = [600, 600, 600, 600, 600, 600]
-baseRadius = "10px"
-buttonRadius = "8px"
+headingFontWeights = [700, 700, 650, 600, 600, 600]
+baseRadius = "12px"
+buttonRadius = "10px"
 showWidgetBorder = true
-showSidebarBorder = true
+showSidebarBorder = false
 
-[theme.light]
-primaryColor = "#08734E"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F3F6F5"
-textColor = "#182C25"
-borderColor = "#DCE5E0"
-linkColor = "#08734E"
+[theme.sidebar]
+backgroundColor = "#073B2C"
+secondaryBackgroundColor = "#0A4B38"
+textColor = "#F4FBF7"
+primaryColor = "#FFFFFF"
+borderColor = "#1D604B"
 
-[theme.light.sidebar]
-backgroundColor = "#F3F6F5"
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#182C25"
-borderColor = "#DCE5E0"
-
-[theme.dark]
-primaryColor = "#16805D"
-backgroundColor = "#101C17"
-secondaryBackgroundColor = "#1C2C24"
-textColor = "#E9F1EC"
-borderColor = "#354A3E"
-linkColor = "#83D5AC"
-
-[theme.dark.sidebar]
-backgroundColor = "#15231C"
-secondaryBackgroundColor = "#22362A"
-textColor = "#E9F1EC"
-borderColor = "#354A3E"
+[browser]
+gatherUsageStats = false
