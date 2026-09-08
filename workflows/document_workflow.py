@@ -17,6 +17,7 @@ l'utilisateur humain.
 
 import logging
 import hashlib
+import inspect
 from pathlib import Path
 from typing import Any, Dict, Optional, TypedDict
 
@@ -127,7 +128,15 @@ def ocr_node(state: DocumentState) -> Dict[str, Any]:
 
     logger.info("[Workflow] Étape OCR : %s", state["pdf_path"])
 
-    pages = get_ocr_agent().execute_pages(state["pdf_path"])
+    ocr_agent = get_ocr_agent()
+    # Compatibilité avec les doubles de test et les anciennes implémentations
+    # qui ne connaissent que execute_pages(path).
+    if "document_type" in inspect.signature(ocr_agent.execute_pages).parameters:
+        pages = ocr_agent.execute_pages(
+            state["pdf_path"], document_type=state["document_type"]
+        )
+    else:
+        pages = ocr_agent.execute_pages(state["pdf_path"])
     return {"ocr_text": page_text(pages), "ocr_pages": pages,
             "document_sha256": hashlib.sha256(Path(state["pdf_path"]).read_bytes()).hexdigest()}
 

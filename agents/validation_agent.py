@@ -19,6 +19,8 @@ la file de revue.
 """
 
 import logging
+import re
+import unicodedata
 from typing import Any, Dict, List, Optional
 
 from config.settings import settings
@@ -80,8 +82,15 @@ class ValidationAgent:
         for name, decision in field_decisions.items():
             decision["source"] = (sources or {}).get(name)
             if decision["value"] is not None and not (decision["source"] or {}).get("verified"):
+                # Une confiance élevée déclarée par le LLM ne remplace jamais
+                # une preuve. La sortie est conservée pour l'audit, mais ne
+                # doit pas être présentée comme une valeur à confirmer.
+                decision["rejected_unverified_value"] = decision["value"]
+                decision["value"] = None
                 decision["status"] = "signale"
-                decision["reasons"].append("Provenance non vérifiée : contrôler le document original")
+                decision["reasons"].append(
+                    "Valeur rejetée : aucune citation vérifiable dans le document"
+                )
             if decision["value"] is not None:
                 failed_rules = [
                     rule for rule in rule_result.get("rules", [])
@@ -118,6 +127,9 @@ class ValidationAgent:
                         "Sélection manuelle obligatoire parmi : " + candidate_text,
                     ]
 
+        if document_type == "carte_identite":
+            self._apply_identity_safety(field_decisions)
+
         needs_priority_review = (
             security.get("suspicious", False)
             or not rule_result["valid"]
@@ -148,6 +160,63 @@ class ValidationAgent:
             "security": security,
             "needs_priority_review": needs_priority_review,
         }
+
+    @staticmethod
+    def _identity_text(value: Any) -> str:
+        text = unicodedata.normalize("NFKD", str(value or ""))
+        return re.sub(r"\s+", " ", text).strip().upper()
+
+    def _apply_identity_safety(self, decisions: Dict[str, Dict[str, Any]]) -> None:
+        """Écarter les attributions manifestement incompatibles avec le champ."""
+        cin_pattern = re.compile(r"^[A-Z]{1,2}\d{5,8}$")
+        invalid_person_words = {
+            "PERSONNE", "HOMME", "FEMME", "CARTE", "IDENTITE",
+            "ROYAUME DU MAROC", "MAROC",
+        }
+
+        def reject(field: str, reason: str) -> None:
+            decision = decisions.get(field)
+            if decision is None or decision.get("value") is None:
+                return
+            decision["rejected_invalid_value"] = decision["value"]
+            decision["value"] = None
+            decision["status"] = "signale"
+            decision["reasons"].append(reason)
+
+        sex = decisions.get("sexe")
+        if sex and sex.get("value") is not None:
+            normalized = self._identity_text(sex["value"])
+            mapping = {"M": "M", "MASCULIN": "M", "H": "M",
+                       "F": "F", "FEMININ": "F", "FÉMININ": "F"}
+            if normalized in mapping:
+                sex["value"] = mapping[normalized]
+            else:
+                reject("sexe", "Sexe invalide : valeur attendue M ou F")
+
+        cin = decisions.get("cin")
+        if cin and cin.get("value") is not None:
+            normalized_cin = self._identity_text(cin["value"]).replace(" ", "")
+            if cin_pattern.fullmatch(normalized_cin):
+                cin["value"] = normalized_cin
+            else:
+                reject("cin", "Format CIN marocain non reconnu")
+
+        for field in ("nom", "prenom"):
+            decision = decisions.get(field)
+            if decision and self._identity_text(decision.get("value")) in invalid_person_words:
+                reject(field, f"{field.capitalize()} générique ou non identifiable")
+
+        address = decisions.get("adresse")
+        if address and address.get("value") is not None:
+            normalized_address = self._identity_text(address["value"])
+            compact_address = normalized_address.replace(" ", "")
+            cin_value = self._identity_text((decisions.get("cin") or {}).get("value")).replace(" ", "")
+            if (
+                cin_pattern.fullmatch(compact_address)
+                or (cin_value and compact_address == cin_value)
+                or len(normalized_address) < 8
+            ):
+                reject("adresse", "Adresse incompatible : identifiant court détecté")
 
     # =====================================================
     # DECISION PAR CHAMP
@@ -207,3 +276,4 @@ class ValidationAgent:
             }
 
         return decisions
+

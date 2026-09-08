@@ -16,6 +16,18 @@ EXTRA_INCOME_EXCLUDED = ("salaire", "remboursement", "annulation", "contrepassat
 logger = logging.getLogger(__name__)
 
 
+def _verified_transactions(transactions, pages):
+    """Transactions dont la citation est réellement présente sur la page OCR."""
+    page_map = {p["page"]: _norm(p["text"]) for p in pages}
+    verified = []
+    for item in transactions or []:
+        page, quote = item.get("page"), item.get("quote")
+        if (type(page) is int and page in page_map and isinstance(quote, str)
+                and _norm(quote) and _norm(quote) in page_map[page]):
+            verified.append(item)
+    return verified
+
+
 def _norm(value):
     text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
     return re.sub(r"\s+", " ", text).strip()
@@ -103,6 +115,8 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
                     page_number, amount,
                 )
     if not eligible:
+        # L'absence d'une ligne identifiable ne prouve jamais une charge nulle.
+        # Le client doit renseigner 0 lui-même s'il confirme ne pas avoir de crédit.
         return None
     monthly = {}
     for item in eligible:
@@ -129,9 +143,8 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
 def derive_complementary_income(transactions, pages, document_path, document_sha256):
     """Somme mensuelle des crédits complémentaires prouvés, salaire exclu.
 
-    Sur un seul mois, la valeur est un candidat observé et sa régularité reste
-    à confirmer. Sur plusieurs mois, une variation supérieure à 30 % bloque la
-    proposition automatique.
+    Au moins deux mois concordants sont nécessaires. Un virement reçu isolé
+    ne constitue pas une preuve de revenu complémentaire régulier.
     """
     page_map = {p["page"]: _norm(p["text"]) for p in pages}
     eligible = []
@@ -152,18 +165,19 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         monthly[item["month"]] = monthly.get(item["month"], 0.0) + float(item["montant"])
     values = list(monthly.values())
     median = statistics.median(values)
-    if len(values) > 1 and (median == 0 or max(abs(v - median) / median for v in values) > 0.30):
+    if len(values) < 2:
+        return None
+    if median == 0 or max(abs(v - median) / median for v in values) > 0.30:
         return None
     first = eligible[0]
-    regularity_proven = len(monthly) >= 2
     return {
-        "value": float(median), "confidence": 0.60 if regularity_proven else 0.40,
+        "value": float(median), "confidence": 0.60,
         "source": {"document": Path(document_path).name, "sha256": document_sha256,
                    "page": first["page"], "quote": first["quote"], "verified": True,
                    "evidence": [{k: x.get(k) for k in ("date", "description", "montant", "page", "quote")}
                                 for x in eligible],
                    "method": "médiane des totaux mensuels de revenus complémentaires vérifiés",
-                   "regularity_proven": regularity_proven},
+                   "regularity_proven": True},
     }
 
 

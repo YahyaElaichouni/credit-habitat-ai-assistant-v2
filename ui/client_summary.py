@@ -74,22 +74,22 @@ def _csv(rows):
 
 def render_client_summary(documents):
     rows, complete = build_client_summary(documents)
-    st.subheader("Synthèse du dossier client")
-    st.caption("Seules les valeurs confirmées par un conseiller sont reprises. Aucun calcul d'endettement n'est effectué ici.")
+    st.subheader("Ma situation financière")
+    st.caption("Cette synthèse utilise uniquement les informations que vous avez vérifiées.")
     values = {row["field"]: row["Valeur confirmée"] for row in rows if row["Statut"] == "Confirmé"}
     if "salaire_net" in values and "charge_mensuelle_credits" in values:
         ratio = debt_ratio(values["salaire_net"], values["charge_mensuelle_credits"])
         cols = st.columns(3)
-        cols[0].metric("Revenu net confirmé", f"{float(values['salaire_net']):,.2f} MAD", border=True)
-        cols[1].metric("Charges confirmées", f"{float(values['charge_mensuelle_credits']):,.2f} MAD", border=True)
+        cols[0].metric("Mon revenu net", f"{float(values['salaire_net']):,.2f} MAD", border=True)
+        cols[1].metric("Mes charges de crédits", f"{float(values['charge_mensuelle_credits']):,.2f} MAD", border=True)
         cols[2].metric("Taux d'endettement", f"{ratio:.2%}", border=True)
-        st.caption("Calcul : charges mensuelles confirmées ÷ revenu mensuel net confirmé. Revenus complémentaires exclus.")
+        st.caption("Calcul indicatif : charges mensuelles ÷ revenu mensuel net. Les revenus complémentaires ne sont pas inclus.")
     else:
-        st.info("Le taux d'endettement sera calculé après confirmation du revenu net et des charges mensuelles.")
+        st.info("Vérifiez votre revenu net et vos charges mensuelles pour afficher le taux d'endettement.")
     if complete:
-        st.success("Les quatre champs obligatoires sont confirmés.")
+        st.success("Les informations indispensables à la simulation sont vérifiées.")
     else:
-        st.warning("Dossier incomplet ou contradictoire : confirmez les champs obligatoires et résolvez les conflits.")
+        st.warning("Certaines informations doivent encore être vérifiées ou corrigées.")
     display_rows = []
     for row in rows:
         display = {key: value for key, value in row.items() if key not in ("field", "SHA-256")}
@@ -106,7 +106,7 @@ def render_client_summary(documents):
             hide_index=True, width="stretch",
         )
     st.download_button(
-        "Exporter la synthèse confirmée", _csv(rows),
+        "Télécharger ma synthèse", _csv(rows),
         file_name="synthese_dossier_confirmee.csv", mime="text/csv",
         key="export_client_summary", on_click="ignore",
     )

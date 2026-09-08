@@ -19,8 +19,9 @@ si besoin.
 """
 
 from typing import Any, Dict, Generic, List, Optional, TypeVar
+import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import math
 
 T = TypeVar("T")
@@ -53,6 +54,40 @@ class ExtractedField(BaseModel, Generic[T]):
         return value
 
 
+class MonetaryField(ExtractedField[float]):
+    """Montant numérique tolérant aux notations OCR marocaines."""
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def parse_moroccan_amount(cls, value):
+        if value is None or isinstance(value, (int, float)):
+            return value
+        if not isinstance(value, str):
+            return value
+        text = value.strip().replace("\u00a0", " ").replace("\u202f", " ")
+        text = re.sub(r"(?i)\b(?:MAD|DHS?|DIRHAMS?)\b", "", text)
+        text = text.replace("د.م.", "").replace("د.م", "")
+        text = re.sub(r"[^0-9,\.\-+ ]", "", text).replace(" ", "")
+        if not text or text in {"-", "+", ".", ","}:
+            return value
+        comma, dot = text.rfind(","), text.rfind(".")
+        if comma >= 0 and dot >= 0:
+            decimal = "," if comma > dot else "."
+            thousands = "." if decimal == "," else ","
+            text = text.replace(thousands, "").replace(decimal, ".")
+        elif comma >= 0:
+            decimals = len(text) - comma - 1
+            text = text.replace(",", "." if decimals in {1, 2} else "")
+        elif dot >= 0:
+            decimals = len(text) - dot - 1
+            if decimals not in {1, 2}:
+                text = text.replace(".", "")
+        try:
+            return float(text)
+        except ValueError:
+            return value
+
+
 # =========================================================
 # TRANSACTION BANCAIRE
 # =========================================================
@@ -64,6 +99,34 @@ class Transaction(BaseModel):
     type: Optional[str] = None
     page: Optional[int] = Field(default=None, ge=1, strict=True)
     quote: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_simple_or_wrapped_fields(cls, data):
+        """Tolérer les sous-champs enveloppés malgré la consigne du prompt."""
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        evidence_page = normalized.get("page")
+        evidence_quote = normalized.get("quote")
+        for name in ("date", "description", "montant", "type"):
+            wrapped = normalized.get(name)
+            if not isinstance(wrapped, dict) or "value" not in wrapped:
+                continue
+            source = wrapped.get("source")
+            if isinstance(source, dict):
+                if evidence_page is None and type(source.get("page")) is int:
+                    evidence_page = source["page"]
+                if evidence_quote is None and isinstance(source.get("quote"), str):
+                    evidence_quote = source["quote"]
+            normalized[name] = wrapped.get("value")
+        if isinstance(evidence_page, dict):
+            evidence_page = evidence_page.get("value")
+        if isinstance(evidence_quote, dict):
+            evidence_quote = evidence_quote.get("value")
+        normalized["page"] = evidence_page
+        normalized["quote"] = evidence_quote
+        return normalized
 
 
 # =========================================================
@@ -98,14 +161,18 @@ class BulletinSchema(BaseModel):
     prenom: ExtractedField[str] = Field(default_factory=ExtractedField)
 
     employeur: ExtractedField[str] = Field(default_factory=ExtractedField)
+    matricule: ExtractedField[str] = Field(default_factory=ExtractedField)
     poste: ExtractedField[str] = Field(default_factory=ExtractedField)
+    compte_bancaire: ExtractedField[str] = Field(default_factory=ExtractedField)
 
     date_embauche: ExtractedField[str] = Field(default_factory=ExtractedField)
     periode: ExtractedField[str] = Field(default_factory=ExtractedField)
 
-    salaire_base: ExtractedField[float] = Field(default_factory=ExtractedField)
-    salaire_brut: ExtractedField[float] = Field(default_factory=ExtractedField)
-    salaire_net: ExtractedField[float] = Field(default_factory=ExtractedField)
+    salaire_base: MonetaryField = Field(default_factory=MonetaryField)
+    salaire_brut: MonetaryField = Field(default_factory=MonetaryField)
+    brut_imposable: MonetaryField = Field(default_factory=MonetaryField)
+    total_retenues: MonetaryField = Field(default_factory=MonetaryField)
+    salaire_net: MonetaryField = Field(default_factory=MonetaryField)
 
     devise: ExtractedField[str] = Field(default_factory=ExtractedField)
 
@@ -125,21 +192,23 @@ class ReleveBancaireSchema(BaseModel):
     prenom: ExtractedField[str] = Field(default_factory=ExtractedField)
 
     banque: ExtractedField[str] = Field(default_factory=ExtractedField)
+    agence: ExtractedField[str] = Field(default_factory=ExtractedField)
+    titulaire_adresse: ExtractedField[str] = Field(default_factory=ExtractedField)
     numero_compte: ExtractedField[str] = Field(default_factory=ExtractedField)
     iban: ExtractedField[str] = Field(default_factory=ExtractedField)
 
     periode_debut: ExtractedField[str] = Field(default_factory=ExtractedField)
     periode_fin: ExtractedField[str] = Field(default_factory=ExtractedField)
 
-    solde_initial: ExtractedField[float] = Field(default_factory=ExtractedField)
-    solde_final: ExtractedField[float] = Field(default_factory=ExtractedField)
+    solde_initial: MonetaryField = Field(default_factory=MonetaryField)
+    solde_final: MonetaryField = Field(default_factory=MonetaryField)
 
     devise: ExtractedField[str] = Field(default_factory=ExtractedField)
 
     transactions: List[Transaction] = Field(default_factory=list)
 
-    charge_mensuelle_credits: ExtractedField[float] = Field(default_factory=ExtractedField)
-    revenus_complementaires: ExtractedField[float] = Field(default_factory=ExtractedField)
+    charge_mensuelle_credits: MonetaryField = Field(default_factory=MonetaryField)
+    revenus_complementaires: MonetaryField = Field(default_factory=MonetaryField)
 
 
 # =========================================================
@@ -159,12 +228,12 @@ class CompromisSchema(BaseModel):
     adresse_bien: ExtractedField[str] = Field(default_factory=ExtractedField)
     type_bien: ExtractedField[str] = Field(default_factory=ExtractedField)
 
-    prix_vente: ExtractedField[float] = Field(default_factory=ExtractedField)
+    prix_vente: MonetaryField = Field(default_factory=MonetaryField)
     devise: ExtractedField[str] = Field(default_factory=ExtractedField)
 
     date_signature: ExtractedField[str] = Field(default_factory=ExtractedField)
 
-    superficie: ExtractedField[float] = Field(default_factory=ExtractedField)
+    superficie: MonetaryField = Field(default_factory=MonetaryField)
     reference_cadastrale: ExtractedField[str] = Field(default_factory=ExtractedField)
 
 

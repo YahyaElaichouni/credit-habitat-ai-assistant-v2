@@ -23,6 +23,9 @@ from extraction.schema import (
     flatten,
 )
 from extraction.sanitizer import wrap_as_data
+from extraction.identity_mrz import fill_missing_identity_fields
+from extraction.payroll_fallback import fill_missing_payroll_fields
+from extraction.statement_fallback import fill_missing_statement_fields
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +232,16 @@ class DocumentExtractor:
         data = self.parse_json(
             response
         )
+
+        # Une MRZ lisible peut fournir un secours déterministe lorsque le
+        # modèle laisse des champs CNIE absents. Les valeurs LLM existantes
+        # ne sont jamais écrasées et la confiance reste sous le seuil humain.
+        if document_type == "carte_identite":
+            data = fill_missing_identity_fields(data, ocr_text)
+        elif document_type == "bulletin":
+            data = fill_missing_payroll_fields(data, ocr_text)
+        elif document_type == "releve":
+            data = fill_missing_statement_fields(data, ocr_text)
 
         # -------------------------------------------------
         # 4. Valider avec Pydantic

@@ -17,6 +17,7 @@ un point d'entrée unique cohérent avec l'architecture du projet.
 
 import json
 import logging
+import math
 import uuid
 import time
 import pickle
@@ -31,7 +32,7 @@ from config.settings import settings
 from database import audit
 from extraction.schema import DOCUMENT_SCHEMAS
 from ui.document_review import render_declared_form, render_document_review
-from ui.client_summary import render_client_summary
+from ui.client_summary import build_client_summary, render_client_summary
 
 # =========================================================
 # CONFIGURATION
@@ -121,6 +122,30 @@ def inject_app_styles():
             max-width: 1280px;
             padding-top: 2rem;
             padding-bottom: 3rem;
+            padding-right: 390px;
+        }
+        .st-key-assistant_dock {
+            position: fixed;
+            right: 1.25rem;
+            bottom: 1rem;
+            width: 350px;
+            z-index: 999;
+        }
+        .st-key-assistant_dock [data-testid="stVerticalBlockBorderWrapper"] {
+            background: rgba(255, 255, 255, .98);
+            box-shadow: 0 18px 55px rgba(7, 59, 44, .22);
+            backdrop-filter: blur(12px);
+        }
+        .st-key-journey_step button {
+            min-height: 3.2rem;
+        }
+        @media (max-width: 1100px) {
+            .block-container { padding-right: 1rem; }
+            .st-key-assistant_dock {
+                position: static;
+                width: 100%;
+                margin-top: 1rem;
+            }
         }
         .ca-hero {
             padding: 2.1rem 2.2rem;
@@ -216,7 +241,7 @@ def render_header():
     logo = Path("assets/logo_ca.jpg")
     if logo.is_file():
         st.logo(str(logo), size="large")
-    st.caption("CRÉDIT AGRICOLE DU MAROC  ·  ESPACE CONSEILLER")
+    st.caption("CRÉDIT AGRICOLE DU MAROC  ·  MON PROJET HABITAT")
 
 
 def render_article_card(icon, title, text, tag):
@@ -232,6 +257,123 @@ def render_article_card(icon, title, text, tag):
         """,
         unsafe_allow_html=True,
     )
+
+
+def _go_to(page):
+    st.session_state.page = page
+
+
+def render_customer_journey():
+    """Parcours permanent : le client sait toujours où il se trouve."""
+    documents = list(st.session_state.documents.values())
+    has_documents = bool(documents)
+    has_result = st.session_state.last_result is not None
+    current_page = st.session_state.page
+
+    st.caption("VOTRE PARCOURS DE SIMULATION")
+    steps = st.columns(4, gap="small")
+    definitions = [
+        ("1. Mon projet", "Accueil", True, current_page == "Accueil", ":material/home:"),
+        ("2. Mes documents", "Extraction", True, current_page == "Extraction" and not has_result, ":material/upload_file:"),
+        ("3. Vérification", "Extraction", has_documents, current_page == "Extraction" and has_result, ":material/fact_check:"),
+        ("4. Ma simulation", "Simulation", has_result, current_page == "Simulation", ":material/calculate:"),
+    ]
+    for column, (label, page, enabled, active, icon) in zip(steps, definitions):
+        with column:
+            st.button(
+                label,
+                icon=icon,
+                type="primary" if active else "secondary",
+                disabled=st.session_state.processing or not enabled,
+                width="stretch",
+                key=f"journey_{label}",
+                on_click=_go_to,
+                args=(page,),
+            )
+
+    completed = 0
+    if has_documents:
+        completed = 1
+    if has_result:
+        completed = 2
+    if current_page == "Simulation":
+        completed = 3
+    st.progress(completed / 3, text=f"Étape {completed + 1} sur 4")
+
+
+def render_assistant_dock(advisor_id):
+    """Assistant compact et disponible depuis toutes les étapes."""
+    with st.container(key="assistant_dock", border=True):
+        title_col, action_col = st.columns([5, 1], vertical_alignment="center")
+        title_col.markdown("**:material/chat: Besoin d’aide ?**")
+        if action_col.button(
+            "Réduire" if st.session_state.assistant_open else "Ouvrir",
+            icon=":material/close:" if st.session_state.assistant_open else ":material/chat:",
+            key="toggle_assistant_dock",
+            help="Réduire l’assistant" if st.session_state.assistant_open else "Ouvrir l’assistant",
+        ):
+            st.session_state.assistant_open = not st.session_state.assistant_open
+            st.rerun()
+
+        if not st.session_state.assistant_open:
+            st.caption("Posez une question sur votre crédit habitat.")
+            return
+
+        st.caption("Je vous accompagne pendant votre simulation.")
+        history = st.session_state.chat_history[-3:]
+        if not history:
+            suggestions = {
+                "Documents nécessaires": "Quels documents dois-je fournir ?",
+                "Comprendre la mensualité": "Comment est calculée la mensualité ?",
+            }
+            selected = st.pills(
+                "Questions proposées",
+                list(suggestions),
+                label_visibility="collapsed",
+                key="assistant_dock_suggestions",
+            )
+            suggested_question = suggestions.get(selected)
+        else:
+            suggested_question = None
+            with st.container(height=210, border=False):
+                for exchange in history:
+                    with st.chat_message("user"):
+                        st.write(exchange["question"])
+                    with st.chat_message("assistant"):
+                        st.write(exchange["answer"])
+
+        question = st.chat_input(
+            "Écrivez votre question…",
+            key="assistant_dock_input",
+            disabled=st.session_state.processing,
+            submit_mode="disable",
+        )
+        question = question or suggested_question
+        if not question:
+            return
+
+        with st.spinner("Recherche dans les informations Crédit Habitat…"):
+            try:
+                answer = orchestrator.handle_question(
+                    question=question,
+                    advisor_id=advisor_id,
+                    session_id=st.session_state.session_id,
+                )
+            except FileNotFoundError:
+                st.error("La base documentaire n’est pas encore disponible.")
+                return
+            except Exception as exc:
+                logging.exception("Assistant indisponible")
+                st.error(f"L’assistant est momentanément indisponible : {exc}")
+                return
+
+        st.session_state.chat_history.append({
+            "question": question,
+            "answer": answer["answer"],
+            "in_scope": answer.get("in_scope", False),
+            "sources": answer.get("sources", []),
+        })
+        st.rerun()
 
 
 # =========================================================
@@ -265,6 +407,65 @@ def validate_file(uploaded_file):
         pass
     
     return True, "OK"
+
+
+def count_pdf_pages(uploaded_file):
+    """Compter les pages d'un PDF envoyé sans l'écrire sur le disque."""
+    import fitz
+
+    document = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
+    try:
+        return document.page_count
+    finally:
+        document.close()
+
+
+def save_document_files(uploaded_files, document_type, doc_id):
+    """Sauvegarder un document simple ou fusionner le recto-verso d'une CNIE."""
+    files = list(uploaded_files or [])
+    if not files:
+        raise ValueError("Aucun fichier à sauvegarder")
+
+    if len(files) == 1:
+        extension = Path(files[0].name).suffix.lower()
+        saved_path = UPLOAD_DIR / f"{doc_id}{extension}"
+        saved_path.write_bytes(files[0].getvalue())
+        return saved_path
+
+    if document_type != "carte_identite" or len(files) != 2:
+        raise ValueError("Seule la carte d'identité accepte deux fichiers")
+
+    # PyMuPDF permet de produire un PDF unique quelle que soit la combinaison
+    # choisie par l'utilisateur : image+image, PDF+image ou PDF+PDF.
+    import fitz
+
+    saved_path = UPLOAD_DIR / f"{doc_id}.pdf"
+    combined = fitz.open()
+    try:
+        for uploaded in files:
+            extension = Path(uploaded.name).suffix.lower().lstrip(".")
+            source = fitz.open(stream=uploaded.getvalue(), filetype=extension)
+            try:
+                if source.is_pdf:
+                    combined.insert_pdf(source)
+                else:
+                    image_pdf = fitz.open("pdf", source.convert_to_pdf())
+                    try:
+                        combined.insert_pdf(image_pdf)
+                    finally:
+                        image_pdf.close()
+            finally:
+                source.close()
+
+        if combined.page_count != 2:
+            raise ValueError(
+                "Le document recto-verso doit produire exactement deux pages "
+                f"(pages détectées : {combined.page_count})"
+            )
+        combined.save(saved_path, garbage=4, deflate=True)
+    finally:
+        combined.close()
+    return saved_path
 
 def save_session_state():
     """Sauvegarder l'état de la session"""
@@ -363,8 +564,9 @@ if "documents" not in st.session_state:
 if "current_doc_id" not in st.session_state:
     st.session_state.current_doc_id = None
 
-if "current_client_id" not in st.session_state:
-    st.session_state.current_client_id = ""
+if "current_client_id" not in st.session_state or not st.session_state.current_client_id:
+    # Identifiant technique interne : le client n'a rien à saisir pour démarrer.
+    st.session_state.current_client_id = f"client-{st.session_state.session_id[:8]}"
 
 if "confirmed_fields" not in st.session_state:
     st.session_state.confirmed_fields = {}
@@ -387,6 +589,13 @@ if "processing" not in st.session_state:
 if "last_error" not in st.session_state:
     st.session_state.last_error = None
 
+if "assistant_open" not in st.session_state:
+    st.session_state.assistant_open = True
+
+# L'ancienne page de chat est remplacée par l'assistant permanent à droite.
+if st.session_state.page == "Assistant":
+    st.session_state.page = "Accueil"
+
 # =========================================================
 # SIDEBAR AMÉLIORÉE AVEC GESTION CLIENT
 # =========================================================
@@ -395,109 +604,43 @@ inject_app_styles()
 
 with st.sidebar:
     st.markdown("## Crédit Habitat")
-    st.caption("Assistant intelligent du conseiller")
+    st.caption("Votre simulation, étape par étape")
     st.divider()
 
-    st.markdown("**Espace de travail**")
+    # Identifiant conservé uniquement pour l'audit interne.
+    advisor_id = f"client_portal_{st.session_state.session_id[:8]}"
+    st.markdown("**Accès rapide**")
     
-    advisor_id = st.text_input(
-        "Identifiant conseiller",
-        value="conseiller_test",
-        disabled=st.session_state.processing,
-        help="Votre identifiant pour tracer les actions"
-    )
-    
-    st.caption(f"🆔 Session : {st.session_state.session_id[:8]}...")
-    
-    st.divider()
-    
-    # Section Client
-    st.markdown("**Dossier en cours**")
-    
-    client_id = st.text_input(
-        "Identifiant client",
-        value=st.session_state.current_client_id,
-        placeholder="Entrez l'ID du client",
-        key="active_client_input",
-        disabled=st.session_state.processing,
-        help="Les documents sont regroupés par client"
-    )
-    
-    if client_id != st.session_state.current_client_id:
-        st.session_state.current_client_id = client_id
-        # Réinitialiser l'affichage lors du changement de client
-        st.session_state.current_doc_id = None
-        st.session_state.last_result = None
-        st.session_state.confirmed_fields = {}
-        st.rerun()
-    
-    st.divider()
-    
-    st.markdown("**Navigation**")
-    
-    if st.button("Accueil", icon=":material/home:", width="stretch", type="primary" if st.session_state.page == "Accueil" else "secondary", disabled=st.session_state.processing):
+    if st.button("Mon projet", icon=":material/home:", width="stretch", type="primary" if st.session_state.page == "Accueil" else "secondary", disabled=st.session_state.processing):
         st.session_state.page = "Accueil"
         st.rerun()
     
-    if st.button("Analyse documentaire", icon=":material/description:", width="stretch", type="primary" if st.session_state.page == "Extraction" else "secondary", disabled=st.session_state.processing):
+    if st.button("Mes documents", icon=":material/description:", width="stretch", type="primary" if st.session_state.page == "Extraction" else "secondary", disabled=st.session_state.processing):
         st.session_state.page = "Extraction"
         st.rerun()
-    
-    if st.button("Assistant IA", icon=":material/chat:", width="stretch", type="primary" if st.session_state.page == "Assistant" else "secondary", disabled=st.session_state.processing):
-        st.session_state.page = "Assistant"
+
+    if st.button("Ma simulation", icon=":material/calculate:", width="stretch", type="primary" if st.session_state.page == "Simulation" else "secondary", disabled=st.session_state.processing):
+        st.session_state.page = "Simulation"
         st.rerun()
     
-    st.divider()
-    
-    with st.expander("Environnement", icon=":material/info:"):
-        st.caption("Traitement local avec OCR et Ollama.")
-        st.caption("Les valeurs extraites restent à confirmer par le conseiller.")
-        st.caption("Apparence : menu ⋮ → Settings → Theme.")
+    with st.expander("Confidentialité", icon=":material/lock:"):
+        st.caption("Vos justificatifs servent uniquement à préparer cette simulation.")
+        st.caption("Vous gardez le contrôle : chaque information doit être vérifiée avant utilisation.")
 
-
-    # Actions rapides
-    st.markdown("**Gestion de la session**")
+    st.markdown("**Mon dossier**")
     
-    if st.button("💾 Sauvegarder la session", width="stretch"):
+    if st.button("Sauvegarder mon dossier", width="stretch"):
         if save_session_state():
-            st.success("✅ Session sauvegardée")
+            st.success("Dossier sauvegardé")
         else:
             st.error("❌ Erreur lors de la sauvegarde")
     
-    if st.button("↩️ Restaurer la session", width="stretch"):
+    if st.button("Reprendre mon dossier", width="stretch"):
         if load_session_state(st.session_state.session_id):
-            st.success("✅ Session restaurée")
+            st.success("Dossier restauré")
             st.rerun()
         else:
-            st.error("❌ Aucune session sauvegardée")
-    
-    st.divider()
-    
-    with st.expander("⚙️ Paramètres techniques"):
-        st.caption(f"Confiance minimale : {settings.confidence_threshold}")
-        st.caption(f"Écart maximal : {settings.discrepancy_threshold:.0%}")
-        st.caption(f"Taille max : {settings.max_file_size_mb} Mo")
-        st.caption(f"Similarité RAG : {settings.rag_similarity_threshold}")
-    
-    # Journal d'activité
-    with st.expander("📋 Journal d'activité"):
-        try:
-            last_actions = audit.get_recent_actions(
-                advisor_id=advisor_id,
-                limit=10
-            ) if hasattr(audit, 'get_recent_actions') else []
-            
-            if last_actions:
-                for action in last_actions[:5]:
-                    col_time, col_action = st.columns([1, 2])
-                    with col_time:
-                        st.caption(action.get('timestamp', '')[:10])
-                    with col_action:
-                        st.text(action.get('description', '')[:50])
-            else:
-                st.caption("Aucune activité récente")
-        except Exception:
-            st.caption("Journal non disponible")
+            st.error("Aucun dossier sauvegardé pour cette session")
 
 # =========================================================
 # APPLICATION DU THÈME
@@ -510,24 +653,21 @@ with st.sidebar:
 # =========================================================
 
 render_header()
+render_customer_journey()
 
 # =========================================================
 # PAGE ACCUEIL
 # =========================================================
 
 if st.session_state.page == "Accueil":
-    client_badge = (
-        f'<span class="ca-tag">Dossier actif · {st.session_state.current_client_id}</span>'
-        if st.session_state.current_client_id
-        else '<span class="ca-tag">Renseignez un client pour démarrer</span>'
-    )
+    client_badge = '<span class="ca-tag">SIMULATION PERSONNELLE ET NON CONTRACTUELLE</span>'
     st.markdown(
         f"""
         <section class="ca-hero">
             <div class="ca-eyebrow">CRÉDIT HABITAT · PARCOURS ASSISTÉ</div>
-            <h1>Un dossier plus clair,<br>une décision mieux préparée.</h1>
-            <p>Centralisez les justificatifs, contrôlez les informations extraites
-            et retrouvez rapidement les réponses utiles dans la documentation bancaire.</p>
+            <h1>Construisez votre projet immobilier<br>en toute simplicité.</h1>
+            <p>Déposez vos justificatifs, vérifiez les informations détectées et obtenez
+            une première estimation de votre capacité de financement.</p>
             {client_badge}
         </section>
         """,
@@ -536,11 +676,11 @@ if st.session_state.page == "Accueil":
 
     action_left, action_right = st.columns([1.15, 0.85], gap="large")
     with action_left.container(border=True, height="stretch"):
-        st.markdown("### Préparer un dossier")
-        st.write("Déposez les justificatifs du client et vérifiez chaque donnée avant son export.")
+        st.markdown("### Démarrer ma simulation")
+        st.write("Ajoutez vos justificatifs puis vérifiez les informations utilisées pour le calcul.")
         st.caption("Pièce d'identité · Bulletin de paie · Relevé de compte · Compromis")
         if st.button(
-            "Lancer une analyse",
+            "Ajouter mes documents",
             icon=":material/arrow_forward:",
             type="primary",
             width="stretch",
@@ -550,16 +690,16 @@ if st.session_state.page == "Accueil":
             st.rerun()
 
     with action_right.container(border=True, height="stretch"):
-        st.markdown("### Consulter l'assistant")
-        st.write("Interrogez les documents de référence sur le crédit habitat.")
+        st.markdown("### Comprendre le crédit habitat")
+        st.write("Posez vos questions sur les offres, les étapes et les documents nécessaires.")
         st.caption("Réponses contextualisées avec sources documentaires")
         if st.button(
-            "Ouvrir l'assistant",
+            "Poser une question",
             icon=":material/chat:",
             width="stretch",
             disabled=st.session_state.processing,
         ):
-            st.session_state.page = "Assistant"
+            st.session_state.assistant_open = True
             st.rerun()
 
     st.markdown('<div class="ca-section-title">À découvrir</div>', unsafe_allow_html=True)
@@ -583,14 +723,8 @@ if st.session_state.page == "Accueil":
         render_article_card(
             "🛡️",
             "Comprendre l'étude du dossier",
-            "Revenus, charges et cohérence documentaire sont vérifiés avant toute décision du conseiller.",
+            "Découvrez comment vos revenus, vos charges et votre apport influencent une simulation.",
             "TRANSPARENCE",
-        )
-
-    if not st.session_state.current_client_id:
-        st.info(
-            "Pour commencer une analyse, saisissez l'identifiant du client dans la barre latérale.",
-            icon=":material/info:",
         )
 
     st.markdown('<div class="ca-section-title">Activité de la session</div>', unsafe_allow_html=True)
@@ -605,10 +739,10 @@ if st.session_state.page == "Accueil":
     cols[2].metric("Questions posées", len(st.session_state.chat_history), border=True)
 
     with st.container(border=True):
-        st.markdown("**La décision reste humaine**")
+        st.markdown("**Une estimation pour mieux vous orienter**")
         st.caption(
-            "L'assistant prépare et justifie les informations. Le conseiller vérifie "
-            "les sources et confirme les valeurs avant leur utilisation."
+            "Le résultat fourni est indicatif et ne constitue ni un accord de crédit ni une offre contractuelle. "
+            "La banque étudiera votre dossier complet avant toute décision."
         )
 
 
@@ -617,16 +751,8 @@ if st.session_state.page == "Accueil":
 # =========================================================
 
 elif st.session_state.page == "Extraction":
-    st.title("Analyse documentaire")
-    st.caption("Déposez une pièce, puis vérifiez les informations extraites avant de les exporter.")
-    
-    # Vérifier que le client est renseigné
-    if not st.session_state.current_client_id:
-        st.warning("⚠️ Veuillez d'abord renseigner un identifiant client dans la sidebar")
-        st.stop()
-    
-    # Afficher le client actuel
-    st.badge(f"Client : {st.session_state.current_client_id}", icon=":material/person:", color="green")
+    st.title("Mes justificatifs")
+    st.caption("Ajoutez vos documents. Vous pourrez vérifier chaque information avant la simulation.")
     
     # -----------------------------------------------------
     # LISTE DES DOCUMENTS DU CLIENT
@@ -640,7 +766,7 @@ elif st.session_state.page == "Extraction":
     
     if client_docs:
         render_client_summary(client_docs)
-        st.subheader("Documents du client")
+        st.subheader("Mes documents")
         
         # Afficher les documents dans une grille
         cols = st.columns(2)
@@ -705,21 +831,101 @@ elif st.session_state.page == "Extraction":
             key="doc_type_select"
         )
         
-        uploaded_file = st.file_uploader(
-            "Déposer un document",
-            type=[ext.lstrip(".") for ext in settings.allowed_extensions],
-            help=f"Formats acceptés : {', '.join(settings.allowed_extensions)}. Taille max : {settings.max_file_size_mb} MB",
-            key=f"uploader_{st.session_state.current_client_id}"
-        )
-        
-        if uploaded_file is not None:
-            is_valid, message = validate_file(uploaded_file)
-            if is_valid:
-                st.success(f"✅ Document sélectionné : {uploaded_file.name}")
-                st.caption(f"📦 Taille : {uploaded_file.size / 1024:.1f} KB")
+        is_identity = document_type == "carte_identite"
+        identity_mode = None
+
+        if is_identity:
+            identity_mode = st.radio(
+                "Format de la carte d'identité",
+                options=("PDF unique recto-verso", "Deux fichiers séparés"),
+                horizontal=True,
+                disabled=st.session_state.processing,
+                key=f"identity_mode_{st.session_state.current_client_id}",
+            )
+
+            if identity_mode == "PDF unique recto-verso":
+                identity_pdf = st.file_uploader(
+                    "PDF contenant le recto et le verso",
+                    type=["pdf"],
+                    accept_multiple_files=False,
+                    help="Le PDF doit contenir exactement deux pages, dans l'ordre recto puis verso.",
+                    key=f"identity_pdf_{st.session_state.current_client_id}",
+                )
+                uploaded_files = [identity_pdf] if identity_pdf is not None else []
             else:
-                st.error(f"⚠️ {message}")
-                uploaded_file = None
+                recto = st.file_uploader(
+                    "Recto de la carte",
+                    type=[ext.lstrip(".") for ext in settings.allowed_extensions],
+                    accept_multiple_files=False,
+                    key=f"identity_recto_{st.session_state.current_client_id}",
+                )
+                verso = st.file_uploader(
+                    "Verso de la carte",
+                    type=[ext.lstrip(".") for ext in settings.allowed_extensions],
+                    accept_multiple_files=False,
+                    key=f"identity_verso_{st.session_state.current_client_id}",
+                )
+                uploaded_files = [file for file in (recto, verso) if file is not None]
+        else:
+            uploaded_value = st.file_uploader(
+                "Déposer un document",
+                type=[ext.lstrip(".") for ext in settings.allowed_extensions],
+                accept_multiple_files=False,
+                help=(
+                    f"Formats acceptés : {', '.join(settings.allowed_extensions)}. "
+                    f"Taille max : {settings.max_file_size_mb} MB"
+                ),
+                key=f"uploader_{st.session_state.current_client_id}_{document_type}",
+            )
+            uploaded_files = [uploaded_value] if uploaded_value is not None else []
+
+        upload_ready = bool(uploaded_files)
+
+        if is_identity and identity_mode == "Deux fichiers séparés" and len(uploaded_files) != 2:
+            upload_ready = False
+            st.caption("Ajoutez les deux faces pour activer l'analyse.")
+
+        if uploaded_files:
+            invalid_messages = []
+            for selected_file in uploaded_files:
+                is_valid, message = validate_file(selected_file)
+                if not is_valid:
+                    invalid_messages.append(f"{selected_file.name} : {message}")
+
+            total_size = sum(selected_file.size for selected_file in uploaded_files)
+            if total_size > settings.max_file_size_mb * 1024 * 1024:
+                invalid_messages.append(
+                    f"Taille totale trop importante (max {settings.max_file_size_mb} MB)"
+                )
+
+            if (
+                is_identity
+                and identity_mode == "PDF unique recto-verso"
+                and not invalid_messages
+            ):
+                try:
+                    page_count = count_pdf_pages(uploaded_files[0])
+                    if page_count != 2:
+                        invalid_messages.append(
+                            f"Le PDF doit contenir exactement 2 pages ; il en contient {page_count}."
+                        )
+                except Exception:
+                    invalid_messages.append("Le PDF est illisible ou endommagé.")
+
+            if invalid_messages:
+                upload_ready = False
+                for message in invalid_messages:
+                    st.error(f"⚠️ {message}")
+            else:
+                for index, selected_file in enumerate(uploaded_files):
+                    if is_identity and identity_mode == "Deux fichiers séparés":
+                        label = "Recto" if index == 0 else "Verso"
+                    elif is_identity:
+                        label = "PDF recto-verso"
+                    else:
+                        label = "Document"
+                    st.success(f"✅ {label} : {selected_file.name}")
+                st.caption(f"📦 Taille totale : {total_size / 1024:.1f} KB")
     
     with col_data:
         st.subheader("2. Informations déclarées")
@@ -746,7 +952,7 @@ elif st.session_state.page == "Extraction":
             "🚀 Lancer l'analyse",
             type="primary",
             width="stretch",
-            disabled=st.session_state.processing or uploaded_file is None,
+            disabled=st.session_state.processing or not upload_ready,
             key="launch_document_analysis",
             on_click=request_document_analysis,
         )
@@ -767,7 +973,7 @@ elif st.session_state.page == "Extraction":
             st.error("⚠️ Veuillez renseigner un identifiant client")
             st.stop()
         
-        if uploaded_file is None:
+        if not upload_ready:
             st.session_state.processing = False
             st.error("⚠️ Déposez un document avant de lancer l'analyse")
             st.stop()
@@ -781,7 +987,10 @@ elif st.session_state.page == "Extraction":
         st.session_state.documents[doc_id] = {
             "client_id": st.session_state.current_client_id,
             "type": document_type,
-            "filename": uploaded_file.name,
+            "filename": (
+                " + ".join(file.name for file in uploaded_files)
+                if len(uploaded_files) > 1 else uploaded_files[0].name
+            ),
             "timestamp": datetime.now().isoformat(),
             "status": "processing",
             "result": None,
@@ -791,16 +1000,13 @@ elif st.session_state.page == "Extraction":
         
         st.session_state.current_doc_id = doc_id
         
-        # Sauvegarder le fichier
-        saved_path = UPLOAD_DIR / f"{doc_id}{Path(uploaded_file.name).suffix.lower()}"
-        st.session_state.documents[doc_id]["document_path"] = str(saved_path)
-        
         # Traiter avec progression
         st.session_state.processing = True
         st.session_state.last_error = None
         
         try:
-            saved_path.write_bytes(uploaded_file.getvalue())
+            saved_path = save_document_files(uploaded_files, document_type, doc_id)
+            st.session_state.documents[doc_id]["document_path"] = str(saved_path)
             result = process_document_with_progress(
                 file_path=saved_path,
                 document_type=document_type,
@@ -853,7 +1059,7 @@ elif st.session_state.page == "Extraction":
             st.divider()
             
             # En-tête du document
-            st.subheader(f"Résultats — {current_doc.get('filename', 'Document')}")
+            st.subheader(f"Informations détectées — {current_doc.get('filename', 'Document')}")
             st.caption(f"Type: {current_doc.get('type', 'Inconnu')} | {current_doc.get('timestamp', '')[:16]}")
             
             result = st.session_state.last_result
@@ -885,9 +1091,9 @@ elif st.session_state.page == "Extraction":
                     
                     metrics = [
                         (col_1, "📊 Champs détectés", total),
-                        (col_2, "✅ Fiables", reliable),
-                        (col_3, "⚠️ À vérifier", review),
-                        (col_4, "❌ Absents", absent),
+                        (col_2, "Déjà renseignés", reliable),
+                        (col_3, "À vérifier", review),
+                        (col_4, "À compléter", absent),
                     ]
                     
                     for column, label, value in metrics:
@@ -897,17 +1103,27 @@ elif st.session_state.page == "Extraction":
                     st.write("")
                     
                     if validation_result["needs_priority_review"]:
-                        st.warning("🔴 Une revue prioritaire est recommandée.")
+                        st.warning("Certaines informations demandent votre attention avant de continuer.")
                     else:
-                        st.success("✅ Aucun point critique détecté.")
+                        st.success("Les informations principales ont été détectées.")
                     
-                    st.subheader("3. Vérifier et confirmer")
+                    st.subheader("3. Vérifier mes informations")
                     confirmations = current_doc.setdefault("confirmed_fields", {})
                     render_document_review(
                         result, current_doc["type"], st.session_state.current_doc_id,
                         advisor_id, st.session_state.session_id, confirmations,
                     )
                     st.session_state.confirmed_fields = confirmations
+
+                    if st.button(
+                        "Continuer vers ma simulation",
+                        icon=":material/arrow_forward:",
+                        type="primary",
+                        width="stretch",
+                        key=f"continue_simulation_{st.session_state.current_doc_id}",
+                    ):
+                        st.session_state.page = "Simulation"
+                        st.rerun()
                     
                     # Sections détaillées
                     with st.expander("📄 Voir le texte OCR"):
@@ -929,14 +1145,94 @@ elif st.session_state.page == "Extraction":
                         st.rerun()
 
 # =========================================================
+# PAGE SIMULATION CLIENT
+# =========================================================
+
+elif st.session_state.page == "Simulation":
+    st.title("Ma simulation de crédit habitat")
+    st.caption("Modifiez les hypothèses pour obtenir une estimation immédiate et non contractuelle.")
+
+    client_docs = {
+        doc_id: document for doc_id, document in st.session_state.documents.items()
+        if document.get("client_id") == st.session_state.current_client_id
+    }
+    if client_docs:
+        render_client_summary(client_docs)
+    else:
+        st.info("Vous pouvez simuler dès maintenant, puis ajouter vos justificatifs pour compléter l'analyse.")
+
+    with st.container(border=True):
+        st.markdown("### Mon projet")
+        project_left, project_right = st.columns(2)
+        with project_left:
+            property_value = st.number_input(
+                "Prix du bien (MAD)", min_value=0.0, value=600000.0,
+                step=10000.0, format="%.2f", key="simulation_property_value",
+            )
+            contribution = st.number_input(
+                "Mon apport personnel (MAD)", min_value=0.0, value=100000.0,
+                step=5000.0, format="%.2f", key="simulation_contribution",
+            )
+        with project_right:
+            duration_years = st.slider(
+                "Durée souhaitée", min_value=5, max_value=30, value=20,
+                format="%d ans", key="simulation_duration",
+            )
+            annual_rate = st.number_input(
+                "Taux annuel indicatif (%)", min_value=0.0, max_value=20.0,
+                value=4.50, step=0.05, format="%.2f", key="simulation_rate",
+                help="Saisissez un taux indicatif. Le taux définitif dépendra de l'offre de la banque.",
+            )
+
+    financed_amount = max(property_value - contribution, 0.0)
+    months = duration_years * 12
+    monthly_rate = annual_rate / 1200
+    if financed_amount == 0:
+        monthly_payment = total_cost = 0.0
+    elif monthly_rate == 0:
+        monthly_payment = financed_amount / months
+        total_cost = 0.0
+    else:
+        monthly_payment = financed_amount * monthly_rate / (1 - math.pow(1 + monthly_rate, -months))
+        total_cost = monthly_payment * months - financed_amount
+
+    result_1, result_2, result_3 = st.columns(3)
+    result_1.metric("Montant à financer", f"{financed_amount:,.2f} MAD", border=True)
+    result_2.metric("Mensualité estimée", f"{monthly_payment:,.2f} MAD", border=True)
+    result_3.metric("Coût estimé des intérêts", f"{total_cost:,.2f} MAD", border=True)
+
+    if client_docs:
+        rows, _ = build_client_summary(client_docs)
+        confirmed = {
+            row["field"]: row["Valeur confirmée"]
+            for row in rows if row["Statut"] == "Confirmé"
+        }
+        income = confirmed.get("salaire_net")
+        current_charges = confirmed.get("charge_mensuelle_credits")
+        if income not in (None, 0) and current_charges is not None:
+            projected_ratio = (float(current_charges) + monthly_payment) / float(income)
+            st.metric("Taux d'endettement projeté", f"{projected_ratio:.2%}", border=True)
+            st.caption(
+                "Calcul indicatif : (charges de crédits actuelles + mensualité estimée) ÷ revenu mensuel net vérifié."
+            )
+        else:
+            st.info("Vérifiez votre bulletin de paie et votre relevé pour afficher le taux d'endettement projeté.")
+
+    st.warning(
+        "Cette simulation est informative. Elle ne constitue ni une offre, ni un accord de crédit. "
+        "Le taux, l'assurance, les frais et l'acceptation dépendent de l'étude complète par la banque."
+    )
+
+
+# =========================================================
 # PAGE ASSISTANT AMÉLIORÉE
 # =========================================================
 
 elif st.session_state.page == "Assistant":
-    st.title("Assistant documentaire")
+    st.title("Comprendre mon crédit habitat")
     
     st.caption(
-        "Posez une question sur les documents officiels indexés dans la base documentaire."
+        "Posez une question sur les offres, les conditions et la préparation de votre projet."
     )
     
     # Actions rapides
@@ -1061,6 +1357,9 @@ elif st.session_state.page == "Assistant":
         
         st.rerun()
 
+# L'assistant est rendu après le contenu mais reste fixé à droite par CSS.
+render_assistant_dock(advisor_id)
+
 # =========================================================
 # FOOTER
 # =========================================================
@@ -1082,4 +1381,3 @@ if "error" in st.session_state:
         if st.button("Effacer l'erreur"):
             del st.session_state.error
             st.rerun()
-

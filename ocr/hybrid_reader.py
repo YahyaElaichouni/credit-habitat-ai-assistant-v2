@@ -18,10 +18,25 @@ def usable_native_text(text):
 
 
 class HybridReader:
-    def __init__(self, ocr_factory=None, dpi=300):
+    def __init__(self, ocr_factory=None, dpi=300, max_ocr_side=2400):
         self._factory = ocr_factory
         self._ocr = None
         self.dpi = dpi
+        self.max_ocr_side = max_ocr_side
+
+    def _render_for_ocr(self, document, page):
+        """Rend sans agrandir artificiellement les images déjà matricielles."""
+        if not document.is_pdf:
+            # PNG/JPEG : matrice 1 = résolution native. L'ancien dpi=300
+            # multipliait inutilement largeur et hauteur par environ 3,125.
+            scale = 1.0
+        else:
+            requested_scale = self.dpi / 72.0
+            longest_page_side = max(float(page.rect.width), float(page.rect.height), 1.0)
+            scale = min(requested_scale, self.max_ocr_side / longest_page_side)
+        return page.get_pixmap(
+            matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False
+        )
 
     def _get_ocr(self):
         # Aucun import PaddleOCR ni chargement de modèle pour un PDF numérique.
@@ -33,7 +48,7 @@ class HybridReader:
                 self._ocr = self._factory()
         return self._ocr
 
-    def document_to_pages(self, document_path):
+    def document_to_pages(self, document_path, document_type=None):
         started = perf_counter()
         pages = []
         native_count = 0
@@ -65,11 +80,22 @@ class HybridReader:
                 else:
                     logger.info('Lecture page %d/%d — OCR en cours', number, total)
                     import numpy as np
-                    pix = page.get_pixmap(dpi=self.dpi, colorspace=fitz.csRGB, alpha=False)
+                    pix = self._render_for_ocr(document, page)
                     image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
                         pix.height, pix.width, 3).copy()
-                    lines = self._get_ocr().image_to_text(image)
-                    text = '\n'.join(line['text'] for line in lines)
+                    logger.info(
+                        'Image OCR page %d : %dx%d pixels', number, pix.width, pix.height
+                    )
+                    ocr = self._get_ocr()
+                    lines = (
+                        ocr.image_to_text(image)
+                        if document_type is None
+                        else ocr.image_to_text(image, document_type=document_type)
+                    )
+                    # Conserver la géométrie : indispensable pour ne pas
+                    # mélanger les colonnes Gains/Déductions d'un bulletin
+                    # ou Débit/Crédit d'un relevé bancaire.
+                    text = ocr.lines_to_layout_text(lines)
                     mode = 'OCR'
                 # Même contrat que l'ancien lecteur, pages vides comprises.
                 pages.append({'page': number, 'text': text})
@@ -79,5 +105,8 @@ class HybridReader:
                     native_count, len(pages) - native_count, perf_counter() - started)
         return pages
 
-    def pdf_to_text(self, document_path):
-        return '\n\n'.join(page['text'] for page in self.document_to_pages(document_path))
+    def pdf_to_text(self, document_path, document_type=None):
+        return '\n\n'.join(
+            page['text']
+            for page in self.document_to_pages(document_path, document_type=document_type)
+        )

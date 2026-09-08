@@ -1,6 +1,9 @@
 """Interface de revue : l'état de confirmation est propre à chaque document."""
 
 import json
+import re
+import unicodedata
+from collections import defaultdict
 from pathlib import Path
 from typing import get_args
 
@@ -19,6 +22,37 @@ LABELS = {
     "revenus_complementaires": "Revenus complémentaires mensuels (MAD)",
 }
 IDENTITY_METADATA_FIELDS = {"identite_ambigue", "noms_non_attribues"}
+
+
+def _normalized_label(value):
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", text).strip().upper()
+
+
+def _observed_recurring_incoming(transactions):
+    """Retourne un total indicatif, jamais une validation automatique."""
+    groups = defaultdict(list)
+    for item in transactions or []:
+        if not isinstance(item, dict) or str(item.get("type") or "").lower() != "credit":
+            continue
+        label = _normalized_label(item.get("description"))
+        if not (label.startswith("VIR-INST DE ") or label.startswith("VIREMENT RECU DE ")):
+            continue
+        if any(word in label for word in ("SALAIRE", "REMBOURSEMENT", "ANNULATION")):
+            continue
+        try:
+            amount = abs(float(item.get("montant")))
+        except (TypeError, ValueError):
+            continue
+        if amount:
+            # Retirer les références numériques variables pour regrouper un même émetteur.
+            group = re.sub(r"\b\d+\b", "", label)
+            groups[re.sub(r"\s+", " ", group).strip()].append(amount)
+    candidates = [values for values in groups.values() if len(values) >= 2]
+    if len(candidates) != 1:
+        return None
+    return round(sum(candidates[0]), 2)
 
 
 def _numeric(document_type, field):
@@ -50,12 +84,37 @@ def render_declared_form(document_type, client_id):
 
 def render_document_review(result, document_type, document_id, advisor_id, session_id, confirmations):
     fields = result["validation_result"]["fields"]
-    st.caption("Aucune valeur n'est validée automatiquement. Vérifiez les justificatifs avant de confirmer.")
+    st.caption("Vérifiez les informations ci-dessous. Vous pouvez les corriger avant de continuer.")
     original = Path(result.get("pdf_path", ""))
     upload_root = Path("data/uploads").resolve()
     if original.is_file() and original.resolve().is_relative_to(upload_root):
         st.download_button("Consulter le document original", original.read_bytes(),
                            file_name=original.name, key=f"original_{document_id}")
+    observed_income = None
+    if document_type == "releve":
+        transactions = (fields.get("transactions") or {}).get("value") or []
+        observed_income = _observed_recurring_incoming(transactions)
+        debit_total = sum(
+            abs(float(item.get("montant") or 0)) for item in transactions
+            if isinstance(item, dict) and str(item.get("type") or "").lower() == "debit"
+        )
+        credit_total = sum(
+            abs(float(item.get("montant") or 0)) for item in transactions
+            if isinstance(item, dict) and str(item.get("type") or "").lower() == "credit"
+        )
+        balance = (fields.get("solde_final") or {}).get("value")
+        st.markdown("### Résumé des mouvements observés")
+        movement_columns = st.columns(3)
+        movement_columns[0].metric("Débits observés", f"{debit_total:,.2f} MAD", border=True)
+        movement_columns[1].metric("Crédits observés", f"{credit_total:,.2f} MAD", border=True)
+        movement_columns[2].metric(
+            "Solde final", "Non détecté" if balance is None else f"{float(balance):,.2f} MAD",
+            border=True,
+        )
+        st.caption(
+            "Les crédits observés sont des entrées sur le compte ; ils ne deviennent un "
+            "revenu complémentaire mensuel qu'après vérification de leur régularité."
+        )
     for name, decision in fields.items():
         if name in IDENTITY_METADATA_FIELDS:
             continue
@@ -67,12 +126,13 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
             required = name in REQUIRED_FIELDS[document_type]
             st.subheader(LABELS.get(name, name.replace("_", " ").capitalize()) + (" *" if required else ""))
             if decision.get("confidence") is not None:
-                st.caption(f"Confiance déclarée par le modèle : {decision['confidence']:.0%} (non calibrée)")
+                if decision["confidence"] < 0.85:
+                    st.caption("Cette information demande une vérification attentive.")
             source = decision.get("source") or {}
             if source.get("verified"):
                 st.caption(f"Document : {source['document']} — page {source['page']}")
                 st.text(source["quote"])
-                st.caption("Citation retrouvée dans l'OCR ; vérifiez qu'elle justifie réellement la valeur.")
+                st.caption("Extrait du justificatif utilisé pour proposer cette information.")
                 evidence = source.get("evidence") or []
                 if evidence:
                     st.caption("Opérations utilisées pour le calcul :")
@@ -87,10 +147,16 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
                     if source.get("regularity_proven") is False:
                         st.warning(
                             "Montant observé sur un seul mois : son caractère régulier "
-                            "doit être confirmé par le conseiller."
+                            "doit être vérifié à partir de vos relevés."
                         )
+            elif name in {"charge_mensuelle_credits", "revenus_complementaires"} and value is None:
+                st.info(
+                    "Aucun montant régulier suffisamment justifié n’a été détecté. "
+                    "Renseignez vous-même la valeur après vérification du relevé. "
+                    "Saisissez 0 uniquement si vous confirmez l’absence de ce montant."
+                )
             else:
-                st.warning("Provenance non vérifiée. Consultez le document original avant toute saisie ou confirmation.")
+                st.warning("Cette information n'a pas pu être reliée précisément au justificatif. Vérifiez-la sur le document original.")
             discrepancy = decision.get("discrepancy")
             if discrepancy and discrepancy.get("passed") is False:
                 declared = discrepancy.get("declared_value")
@@ -102,7 +168,7 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
                     f"Différence : {difference:+g} ({relative:.1%})"
                 )
                 if discrepancy.get("severity") == "critique":
-                    st.error("Écart critique. " + message)
+                    st.error("Différence importante avec votre déclaration. " + message)
                 else:
                     st.warning("Écart à vérifier. " + message)
             for reason in decision.get("reasons", []):
@@ -111,7 +177,7 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
             key = f"review_value_{document_id}_{name}"
             if confirmed:
                 st.write("Valeur finale :", value)
-                st.caption(f"{record['status']} — {record['advisor_id']} — {record['confirmed_at']}")
+                st.caption(f"Information vérifiée le {record['confirmed_at']}")
                 if st.button("Modifier", key=f"reopen_{document_id}_{name}"):
                     try:
                         audit.log_event("human_confirmation_revoked", advisor_id=advisor_id,
@@ -134,13 +200,31 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
             elif not numeric:
                 default = str(value) if value is not None else ""
             st.session_state.setdefault(key, default)
+            if name == "charge_mensuelle_credits" and value is None:
+                if st.button(
+                    "Je confirme ne pas avoir de crédit en cours — proposer 0 MAD",
+                    key=f"suggest_zero_credit_{document_id}",
+                ):
+                    st.session_state[key] = 0.0
+                    st.rerun()
+            elif name == "revenus_complementaires" and value is None and observed_income is not None:
+                st.warning(
+                    f"Virements entrants répétés observés : {observed_income:,.2f} MAD. "
+                    "Ce total n'est pas automatiquement considéré comme un revenu régulier."
+                )
+                if st.button(
+                    f"Proposer {observed_income:,.2f} MAD après vérification",
+                    key=f"suggest_income_{document_id}",
+                ):
+                    st.session_state[key] = float(observed_income)
+                    st.rerun()
             if numeric:
                 edited = st.number_input("Valeur proposée", value=None, key=key, disabled=False,
                                          step=0.01, format="%.2f")
             else:
                 edited = st.text_input("Valeur proposée", key=key,
                                        help="JJ/MM/AAAA ou AAAA-MM-JJ" if name in DATE_FIELDS else None)
-            checked = st.checkbox("J'ai vérifié cette valeur dans le justificatif",
+            checked = st.checkbox("J'ai vérifié cette information sur mon justificatif",
                                   key=f"review_check_{document_id}_{name}")
             if st.button("Confirmer", key=f"confirm_{name}_{document_id}", disabled=not checked):
                 try:
@@ -164,13 +248,13 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
                or confirmations[name].get("document_id") != document_id
                or confirmations[name].get("value") is None]
     if missing:
-        st.warning("Dossier incomplet — champs obligatoires à confirmer : " + ", ".join(missing))
+        st.warning("Informations obligatoires à vérifier : " + ", ".join(missing))
     try:
         csv_data = export_confirmed_csv(result, document_type, confirmations, document_id)
     except (ValueError, TypeError) as exc:
         st.error(f"Export bloqué : {exc}")
         csv_data = None
-    st.download_button("Exporter les champs confirmés (CSV)", csv_data or b"",
+    st.download_button("Télécharger mes informations vérifiées (CSV)", csv_data or b"",
                        file_name=f"champs_confirmes_{document_type}.csv", mime="text/csv",
                        disabled=csv_data is None, key=f"export_{document_id}", on_click="ignore")
     st.caption("Export partiel possible : seuls les champs explicitement confirmés sont inclus.")
