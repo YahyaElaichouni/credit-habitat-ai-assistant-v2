@@ -131,23 +131,77 @@ def inject_app_styles():
             position: fixed;
             right: 1.25rem;
             bottom: 1.25rem;
-            width: min(370px, calc(100vw - 2rem));
-            z-index: 999;
+            width: min(410px, calc(100vw - 2.5rem));
+            max-height: min(760px, calc(100vh - 2.5rem));
+            z-index: 9999;
+            background-color: #edf7f2 !important;
+            border-radius: 1.35rem;
+            overflow: hidden;
+            box-shadow: 0 22px 65px rgba(7, 59, 44, 0.24);
+        }
+        .st-key-assistant_dock > div,
+        .st-key-assistant_dock [data-testid="stVerticalBlockBorderWrapper"] {
+            min-width: 0;
         }
         .st-key-assistant_dock [data-testid="stVerticalBlockBorderWrapper"] {
-            background: rgba(255, 255, 255, .98);
-            box-shadow: 0 18px 55px rgba(7, 59, 44, .22);
-            backdrop-filter: blur(12px);
+            overflow: hidden;
+            background: #edf7f2;
+            border: 1px solid rgba(0, 122, 77, .18);
+            border-radius: 1.35rem;
+            box-shadow: 0 22px 65px rgba(7, 59, 44, .24);
+            backdrop-filter: blur(16px);
+        }
+        .st-key-assistant_launcher {
+            position: fixed;
+            right: 1.25rem;
+            bottom: 1.25rem;
+            width: 235px;
+            z-index: 9999;
+        }
+        .st-key-assistant_launcher button {
+            min-height: 3.5rem;
+            border: 0;
+            border-radius: 999px;
+            color: #ffffff;
+            background: linear-gradient(120deg, #073b2c 0%, #007a4d 100%);
+            box-shadow: 0 14px 35px rgba(7, 59, 44, .28);
+            font-weight: 750;
+        }
+        .st-key-assistant_launcher button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 18px 42px rgba(7, 59, 44, .34);
+        }
+        .st-key-assistant_close button {
+            width: 2.55rem;
+            min-width: 2.55rem;
+            height: 2.55rem;
+            min-height: 2.55rem;
+            padding: 0;
+            border-radius: 999px;
+            font-size: 1.35rem;
+            line-height: 1;
+        }
+        .st-key-assistant_dock [data-testid="stChatMessage"] {
+            padding-block: .7rem;
+        }
+        .st-key-assistant_dock [data-testid="stChatInput"] {
+            border-radius: 1rem;
         }
         .st-key-journey_step button {
             min-height: 3.2rem;
         }
-        @media (max-width: 1100px) {
-            .block-container { padding-right: 1rem; }
+        @media (max-width: 700px) {
             .st-key-assistant_dock {
-                position: static;
-                width: 100%;
-                margin-top: 1rem;
+                right: .65rem;
+                left: .65rem;
+                bottom: .65rem;
+                width: auto;
+                max-height: calc(100vh - 1.3rem);
+            }
+            .st-key-assistant_launcher {
+                right: .75rem;
+                bottom: .75rem;
+                width: min(225px, calc(100vw - 1.5rem));
             }
         }
         .ca-hero {
@@ -333,33 +387,56 @@ def render_customer_journey():
 
 
 def render_assistant_dock(advisor_id):
-    """Assistant compact et disponible depuis toutes les étapes."""
+    """Afficher un assistant flottant lisible sur ordinateur et mobile."""
+    robot_path = Path(__file__).resolve().parent / "assets" / "assistant_habitat_robot.png"
+    assistant_avatar = str(robot_path) if robot_path.exists() else ":material/smart_toy:"
+
+    if not st.session_state.assistant_open:
+        with st.container(key="assistant_launcher"):
+            if st.button(
+                "Nour · Assistant habitat",
+                icon=":material/smart_toy:",
+                key="open_assistant_dock",
+                width="stretch",
+                help="Ouvrir votre assistant virtuel",
+            ):
+                st.session_state.assistant_open = True
+                st.rerun()
+        return
+
     with st.container(key="assistant_dock", border=True):
-        title_col, action_col = st.columns([5, 1], vertical_alignment="center")
-        title_col.markdown("**:material/chat: Assistant habitat**")
-        if action_col.button(
-            "Réduire" if st.session_state.assistant_open else "Ouvrir",
-            icon=":material/close:" if st.session_state.assistant_open else ":material/chat:",
-            key="toggle_assistant_dock",
-            help="Réduire l’assistant" if st.session_state.assistant_open else "Ouvrir l’assistant",
-        ):
-            st.session_state.assistant_open = not st.session_state.assistant_open
-            st.rerun()
+        avatar_col, title_col, close_col = st.columns(
+            [1.2, 5.6, 1],
+            vertical_alignment="center",
+        )
+        with avatar_col:
+            if robot_path.exists():
+                st.image(str(robot_path), width=54)
+            else:
+                st.markdown(":material/smart_toy:")
+        with title_col:
+            st.markdown("**Nour, votre assistant habitat**")
+            st.caption("En ligne · Je vous accompagne étape par étape")
+        with close_col:
+            if st.button(
+                "×",
+                key="assistant_close",
+                help="Fermer l’assistant",
+                width="content",
+            ):
+                st.session_state.assistant_open = False
+                st.rerun()
 
-        if not st.session_state.assistant_open:
-            st.caption("Une question ? Je vous accompagne.")
-            return
-
-        st.caption("Offres, documents, mensualité : posez votre question.")
-        history = st.session_state.chat_history[-5:]
+        history = st.session_state.chat_history[-6:]
         if not history:
+            st.write("Bonjour ! Comment puis-je vous aider dans votre projet immobilier ?")
             suggestions = {
-                "Documents nécessaires": "Quels documents dois-je fournir ?",
-                "Comprendre la mensualité": "Comment est calculée la mensualité ?",
-                "Conditions": "Quelles sont les principales conditions du crédit habitat ?",
+                "Documents à préparer": "Quels documents dois-je préparer pour ma simulation ?",
+                "Estimer ma mensualité": "Comment est calculée la mensualité de mon crédit habitat ?",
+                "Étapes de la simulation": "Quelles sont les étapes pour obtenir ma simulation ?",
             }
             selected = st.pills(
-                "Questions proposées",
+                "Questions suggérées",
                 list(suggestions),
                 label_visibility="collapsed",
                 key="assistant_dock_suggestions",
@@ -367,15 +444,15 @@ def render_assistant_dock(advisor_id):
             suggested_question = suggestions.get(selected)
         else:
             suggested_question = None
-            with st.container(height=280, border=False):
+            with st.container(height=320, border=False):
                 for exchange in history:
-                    with st.chat_message("user"):
+                    with st.chat_message("user", avatar=":material/person:"):
                         st.write(exchange["question"])
-                    with st.chat_message("assistant"):
+                    with st.chat_message("assistant", avatar=assistant_avatar):
                         st.write(exchange["answer"])
 
         question = st.chat_input(
-            "Écrivez votre question…",
+            "Posez votre question…",
             key="assistant_dock_input",
             disabled=st.session_state.processing,
             submit_mode="disable",
@@ -384,7 +461,7 @@ def render_assistant_dock(advisor_id):
         if not question:
             return
 
-        with st.spinner("Préparation de votre réponse…"):
+        with st.spinner("Nour prépare votre réponse…"):
             try:
                 answer = orchestrator.handle_question(
                     question=question,
@@ -682,6 +759,10 @@ with st.sidebar:
             st.session_state.current_client_id = None
             st.session_state.page = "Accueil"
             st.rerun()
+
+# L'assistant public est rendu avant le contenu protégé. Il reste donc
+# accessible sur la page de connexion et avant la création d'un compte.
+render_assistant_dock(advisor_id)
 
 # =========================================================
 # APPLICATION DU THÈME
@@ -1539,7 +1620,6 @@ elif st.session_state.page == "Assistant":
         st.rerun()
 
 # L'assistant est rendu après le contenu mais reste fixé à droite par CSS.
-render_assistant_dock(advisor_id)
 
 # =========================================================
 # FOOTER
