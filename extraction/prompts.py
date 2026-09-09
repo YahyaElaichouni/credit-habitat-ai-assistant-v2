@@ -174,7 +174,7 @@ tableau : le séparateur " | " représente des cellules de la même ligne.
 
 Extrais chacun des champs suivants au format
 {{"value": ..., "confidence": ..., "source": ...}} :
-nom, prenom, employeur, matricule, poste, compte_bancaire, date_embauche,
+nom, prenom, employeur, matricule, poste, date_embauche,
 periode, salaire_base, salaire_brut, brut_imposable, total_retenues,
 salaire_net et devise.
 
@@ -191,18 +191,16 @@ ASSOCIATION DES LIBELLES (variantes possibles)
   l'agence bancaire, le département ou la direction du salarié.
 - matricule : "Matricule", "Mle", "N° salarié", "Code employé",
   "N° employé". Ne confonds pas avec CIN, CNSS, RCAR, CIMR, CNRA, AMO,
-  mutuelle, compte bancaire, RIB, rubrique ou code direction.
+  mutuelle, compte bancaire, RIB, rubrique ou code direction. Dans un tableau,
+  la valeur peut se trouver sur la ligne suivante sous la colonne Matricule.
 - poste : "Poste", "Fonction", "Emploi", "Profession", "Grade",
-  "Qualification", "Catégorie", "Classe". Une direction, un département,
+  "Emploi occupé", "Qualification", "Catégorie", "Classe". Une direction, un département,
   une antenne ou une adresse n'est pas automatiquement un poste.
-- compte_bancaire : "Compte bancaire", "N° compte", "Compte",
-  "RIB", "IBAN", "Mode de paiement : virement". Le mode de paiement seul
-  ne fournit pas de numéro de compte.
 - date_embauche : "Date d'embauche", "Date embauche", "Embauché le",
   "Date d'entrée", "Entrée société", "Date de recrutement",
   "Début de contrat". "Ancienneté" n'est pas une date d'embauche.
 - periode : "Période", "Période de paie", "Paie de", "Mois de paie",
-  "Bulletin de paie 9/2023", "Janvier 2026", "du ... au ...".
+  "Bulletin de paie 9/2023", "Janvier 2026", "Période du : ... au : ...".
   Une date d'édition, d'impression ou de paiement n'est pas la période.
 - salaire_base : "Salaire de base", "Salaire principal", "Traitement de
   base", "Base mensuelle" ou "Salaire horaire" quand le bulletin est
@@ -214,7 +212,9 @@ ASSOCIATION DES LIBELLES (variantes possibles)
   mois n'est demandé ; privilégie toujours la ligne de la période courante.
 - total_retenues : "Total retenues", "Total des retenues",
   "Total cotisations", "Retenues salariales". Ne prends pas une retenue
-  individuelle (IR, CNSS, AMO, CIMR, mutuelle, avance ou prêt).
+  individuelle (IR, CNSS, AMO, CIMR, mutuelle, avance ou prêt). Si le tableau
+  sépare "Part salariale" et "Part patronale", total_retenues désigne seulement
+  le total salarial retenu au salarié ; ignore la part patronale.
 - salaire_net : "Salaire net", "Net à payer", "Net payé", "Net du mois",
   "Net imposable" SEULEMENT si le document l'utilise explicitement comme
   montant final ; sinon net imposable et net à payer sont différents.
@@ -227,7 +227,8 @@ A. Cherche d'abord le libellé, puis la valeur dans la même cellule, la cellule
 B. Pour une ligne de tableau, respecte les colonnes Libellé/Base/Taux/Gain/
    Retenue. Un nombre de la colonne Taux ou Base n'est pas le montant Gain.
 C. La zone "Cumuls" ou "Année" contient des agrégats historiques : ne les
-   utilise pas à la place du montant de la période courante.
+   utilise pas à la place du montant de la période courante. Dans un tableau
+   Période/Année, sélectionne exclusivement la ligne Période.
 D. source.quote doit contenir le libellé et la valeur. Si la citation ne
    permet pas de vérifier l'association, retourne null.
 E. Corrige seulement les séparateurs OCR évidents dans les nombres :
@@ -252,10 +253,9 @@ E. Corrige seulement les séparateurs OCR évidents dans les nombres :
 8. L'employeur peut être indiqué dans l'en-tête ou dans une zone "Société".
    Cite uniquement un texte
    effectivement reconnu par l'OCR, jamais le logo seul.
-9. Le compte peut être libellé RIB, compte bancaire ou numéro de compte.
-10. La devise vaut MAD/DH uniquement si le document l'indique clairement.
-11. Une date d'impression comme "Rabat le ..." n'est pas date_embauche.
-12. Les valeurs de la zone "Cumuls" sont historiques : elles ne doivent
+9. La devise vaut MAD/DH uniquement si le document l'indique clairement.
+10. Une date d'impression comme "Rabat le ..." n'est pas date_embauche.
+11. Les valeurs de la zone "Cumuls" sont historiques : elles ne doivent
     jamais remplacer les totaux de la période courante.
 
 Si une valeur est absente ou illisible, retourne value: null,

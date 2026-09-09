@@ -93,8 +93,11 @@ def _search(text: str, pattern: str, flags: int = re.I) -> Optional[re.Match]:
     return re.search(pattern, text, flags)
 
 
-def _put_match(data: Dict[str, Any], name: str, text: str, match: Optional[re.Match], group: int = 1) -> None:
-    if match and _missing(data, name):
+def _put_match(
+    data: Dict[str, Any], name: str, text: str, match: Optional[re.Match],
+    group: int = 1, *, replace: bool = False,
+) -> None:
+    if match and (replace or _missing(data, name)):
         data[name] = _field(" ".join(match.group(group).split()), text, match)
 
 
@@ -112,8 +115,8 @@ def _fill_pay_totals(data: Dict[str, Any], text: str) -> None:
     labels = {
         "salaire_brut": r"(?:TOTAL\s+BRUT|SALAIRE\s+BRUT(?!\s+IMPOSABLE))",
         "brut_imposable": r"(?:SALAIRE\s+BRUT\s+IMPOSABLE|BRUT\s+IMPOSABLE)",
-        "total_retenues": r"(?:TOTAL\s+(?:DES\s+)?RETENUES?|TOTAL\s+COTISATIONS?)",
-        "salaire_net": r"(?:SALAIRE\s+NET|NET\s+[ÀA]\s+PAYER|NET\s+PAY[EÉ])",
+        "total_retenues": r"(?:TOTAL\s+(?:DES\s+)?RETENUES?|TOTAL\s+COT(?:ISATIONS?|EETONS))",
+        "salaire_net": r"(?:SALAIRE\s+NET|NET\s*[ÀA]?\s*P(?:AYER|ATER|KYER)|NET\s+PAY[EÉ])",
     }
     # Certains OCR aplatissent les quatre libellés puis les quatre nombres.
     # On sécurise l'attribution par l'identité comptable brut - retenues = net.
@@ -175,10 +178,38 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
     if not period:
         period = _search(
             text,
-            r"P[ée]riode\s+du\s+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s+au\s+"
+            r"BULLETIN\s+DE\s+PAIE\s*\|?\s*"
+            r"((?:janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[ûu]t|"
+            r"septembre|octobre|novembre|d[ée]cembre)\s+\d{4})"
+            r"\s*\|?\s*P[ée]riode\b",
+        )
+    if not period:
+        # En-tête aplati : « BULLETIN DE PAIE | Période Janvier 2026 ».
+        period = _search(
+            text,
+            r"BULLETIN\s+DE\s+PAIE\s*\|?\s*P[ée]riode\s*\|?\s*"
+            r"((?:janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[ûu]t|"
+            r"septembre|octobre|novembre|d[ée]cembre)\s+(?:19|20)\d{2})",
+        )
+    if not period:
+        period = _search(
+            text,
+            r"P[ée]riode\s+du\s*:?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s*(?:\|\s*)?au\s*:?\s*"
             r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
         )
-    _put_match(result, "periode", text, period)
+    # Une correspondance structurelle sûre prime sur la sortie LLM : elle
+    # fournit une citation réellement présente, vérifiable par provenance.py.
+    _put_match(result, "periode", text, period, replace=True)
+    # OCR très bruité : « P : 010524 ». On conserve seulement le mois/année
+    # porté par la date de début, sans tenter de corriger une date de fin douteuse.
+    if _missing(result, "periode"):
+        compact_period = _search(text, r"(?:BULLETIN\s*DE\s*PAIE.{0,30}?)\bP\s*:\s*(\d{2})(\d{2})(\d{2})\b")
+        if compact_period:
+            day, month, year = map(int, compact_period.groups())
+            if 1 <= day <= 31 and 1 <= month <= 12:
+                result["periode"] = _field(
+                    f"{month:02d}/20{year:02d}", text, compact_period, confidence=0.58
+                )
     _put_match(result, "compte_bancaire", text, _search(text, r"Compte\s+bancaire.{0,80}?\b(\d{20,30})\b"))
     if _missing(result, "compte_bancaire"):
         _put_match(result, "compte_bancaire", text, _search(text, r"\bRIB\s*:?[ ]*([A-Z0-9 ]{8,32})"))
@@ -186,7 +217,34 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
     _put_match(
         result, "date_embauche", text,
         _search(text, r"Date\s+(?:d['’]?\s*)?embauche\s*(?:\||:)?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"),
+        replace=True,
     )
+    if _missing(result, "date_embauche"):
+        dates_row = _search(
+            text,
+            r"Date\s+naissance\s*\|\s*Date\s+(?:d['’]?\s*)?embauche\s*\|\s*"
+            r"Date\s+anciennet[ée].{0,180}?\|\s*"
+            r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*\|\s*"
+            r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*\|\s*"
+            r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+        )
+        _put_match(result, "date_embauche", text, dates_row, group=2, replace=True)
+    # Les en-têtes de colonnes peuvent être suivis de Fonction/Situation,
+    # puis seulement de la ligne naissance | embauche | ancienneté. Cette
+    # preuve déterministe remplace aussi une valeur LLM dotée d'une fausse
+    # citation, afin qu'elle ne soit pas annulée lors du contrôle de provenance.
+    aligned_dates = _search(
+        text,
+        r"Date\s+naissance\s*\|\s*Date\s+(?:d['’]?\s*)?embauche\s*\|\s*"
+        r"Date\s+anciennet[ée]\s*\|?.{0,220}?"
+        r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*\|\s*"
+        r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*\|\s*"
+        r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+    )
+    if aligned_dates and _valid_employment_date(aligned_dates.group(2)):
+        result["date_embauche"] = _field(
+            aligned_dates.group(2), text, aligned_dates, confidence=0.72
+        )
 
     # Format fréquent : matricule, nom du salarié, puis « Classe ».
     employee = _search(text, r"\b([0-9]{3,8}[A-Z]?)\s+([A-ZÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ' -]{2,60}?)\s+Classe\b")
@@ -199,6 +257,35 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
                 result["prenom"] = _field(words[0].title(), text, employee)
             if _missing(result, "nom"):
                 result["nom"] = _field(" ".join(words[1:]).upper(), text, employee)
+
+    if _missing(result, "matricule") or _missing(result, "nom"):
+        interleaved_employee = _search(
+            text,
+            r"EMPLOY[ÉE]E?\s+[^|]{2,100}\|\s*"
+            r"(\d{2,8}[A-Z]?)\s+([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'' -]{1,40})\s+"
+            r"([A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ' -]{1,40}?)"
+            r"(?=\s+N[°º](?:\s|$)|\s*\|)",
+        )
+        if interleaved_employee:
+            if _missing(result, "matricule"):
+                result["matricule"] = _field(interleaved_employee.group(1), text, interleaved_employee)
+            if _missing(result, "nom"):
+                result["nom"] = _field(interleaved_employee.group(2).strip().upper(), text, interleaved_employee)
+            if _missing(result, "prenom"):
+                result["prenom"] = _field(interleaved_employee.group(3).strip().title(), text, interleaved_employee)
+
+    if _missing(result, "matricule"):
+        table_matricule = _search(
+            text,
+            r"Matricule\s*\|\s*Niveau\s*\|\s*Coef{1,2}icient\s*\|\s*Indice"
+            r".{0,120}?\b(\d{2,8}[A-Z]?)\b",
+        )
+        _put_match(result, "matricule", text, table_matricule)
+    if _missing(result, "matricule"):
+        noisy_matricule = _search(text, r"Matr(?:i)?c(?:u)?le\s*:?[ ]*(\d{2,7}[nIl])\b")
+        if noisy_matricule:
+            normalized = re.sub(r"[nIl]$", "1", noisy_matricule.group(1))
+            result["matricule"] = _field(normalized, text, noisy_matricule, confidence=0.52)
 
     if _missing(result, "matricule") or _missing(result, "nom"):
         labelled_employee = _search(
@@ -221,17 +308,86 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
         result, "poste", text,
         _search(text, r"\b\d{3,5}\s+([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ ]{5,70}?)\s+\d{3,8}[A-Z]?\s+[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ' -]+\s+Classe\b"),
     )
+    if _missing(result, "poste"):
+        occupied_job = _search(
+            text,
+            r"Emploi\s+occup[ée]\s*(?:\||:)?\s*([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ /&'\-]{2,60})"
+            r"(?=\s*\|\s*(?:D[ée]partement|Qualification|N\s*[°º]?\s*SIRET)|"
+            r"\s+(?:D[ée]partement|Qualification|N\s*[°º]?\s*SIRET)\b)",
+        )
+        _put_match(result, "poste", text, occupied_job)
+    if _missing(result, "poste"):
+        split_job = _search(
+            text,
+            r"Emploi\s+occup[ée]\s*\|\s*D[ée]partement\s*\|\s*"
+            r"([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ /&'\-]{2,60})"
+            r"(?=\s*\|\s*Qualification\b)",
+        )
+        _put_match(result, "poste", text, split_job)
+    if _missing(result, "poste"):
+        noisy_job = _search(
+            text,
+            r"Fonction\s+(.{3,55}?)(?=\s+N[°º]\s*CIN|\s+Balaire\s+Horaire)",
+        )
+        if noisy_job:
+            candidate = " ".join(noisy_job.group(1).split())
+            candidate = re.sub(r"^.*\|\s*", "", candidate)
+            if 3 <= len(candidate) <= 55:
+                result["poste"] = _field(candidate, text, noisy_job, confidence=0.48)
 
     # Le nom de l'organisme est accepté seulement dans l'en-tête immédiat.
     header = _search(text, r"\[PAGE\s+1\]\s+([A-Z][A-Z0-9&.-]{2,20})\s+(?:Di\s*rection|Direction)")
     if header and _missing(result, "employeur"):
         result["employeur"] = _field(header.group(1), text, header)
 
-    base = _labelled_amount(text, r"SALAIRE\s+(?:PRINCIPAL|DE\s+BASE|HORAIRE)")
+    base = _labelled_amount(text, r"(?:SALA(?:IRE|INE)|BALAIRE)\s+(?:PRINCIPAL|DE\s+BASE|HORAIRE)")
     if base and _missing(result, "salaire_base"):
         result["salaire_base"] = _field(base[0], text, base[1])
 
     _fill_pay_totals(result, text)
+
+    if _missing(result, "salaire_net"):
+        net_block = _search(text, r"NET\s*[ÀA]?\s*P(?:AYER|ATER|KYER).{0,500}$")
+        if net_block:
+            amounts = re.findall(r"(?<!\d)(\d{1,3}(?:[ .]\d{3})+|\d+)[,.](\d{2})(?!\d)", net_block.group(0))
+            if amounts:
+                whole, decimals = amounts[-1]
+                net_value = _amount(f"{whole},{decimals}")
+                if net_value is not None:
+                    result["salaire_net"] = _field(net_value, text, net_block, confidence=0.62)
+
+    if _missing(result, "nom") or _missing(result, "prenom"):
+        identity_block = _search(
+            text,
+            r"\b[MF]\s*\|\s*((?:EL\s+|AL\s+)?[A-ZÀ-ÖØ-Þ]{2,25}(?:\s+[A-ZÀ-ÖØ-Þ]{2,25}){1,3}?)"
+            r"\s+[A-ZÀ-ÖØ-Þ]{3,20}\s+(?=(?:Acq\w*|Reste|Repos|Cong[ée]s)\b)",
+        )
+        if identity_block:
+            words = identity_block.group(1).split()
+            if len(words) >= 3 and words[0] in {"EL", "AL"}:
+                surname, given = " ".join(words[:2]), " ".join(words[2:])
+            else:
+                surname, given = " ".join(words[:-1]), words[-1]
+            if _missing(result, "nom"):
+                result["nom"] = _field(surname, text, identity_block, confidence=0.66)
+            if _missing(result, "prenom"):
+                result["prenom"] = _field(given.title(), text, identity_block, confidence=0.66)
+
+    # Certains moteurs suppriment l'espace entre le patronyme et le prénom.
+    # La séparation n'est faite que lorsqu'un prénom marocain courant forme un
+    # suffixe exact ; sinon le champ reste vide pour éviter toute invention.
+    if _missing(result, "nom") or _missing(result, "prenom"):
+        joined_identity = _search(text, r"\b[MF]\s*\|\s*(EL\s+|AL\s+)?([A-ZÀ-ÖØ-Þ]{7,35})(?=\s+\d{1,4}\s+LOT\b)")
+        if joined_identity:
+            joined = joined_identity.group(2)
+            given_names = ("MOHAMED", "MOHAMMED", "HAMZA", "YOUNESS", "YAHYA", "AHMED", "AMINE", "OMAR", "ALI")
+            given = next((name for name in given_names if joined.endswith(name) and len(joined) > len(name) + 1), None)
+            if given:
+                prefix = (joined_identity.group(1) or "") + joined[:-len(given)]
+                if _missing(result, "nom"):
+                    result["nom"] = _field(prefix.strip(), text, joined_identity, confidence=0.50)
+                if _missing(result, "prenom"):
+                    result["prenom"] = _field(given.title(), text, joined_identity, confidence=0.50)
 
     if _missing(result, "devise") and any(
         not _missing(result, name) for name in ("salaire_base", "salaire_brut", "salaire_net")

@@ -81,6 +81,21 @@ class OCREngine:
         processed_lines = self._prediction_to_lines(self.reader.predict(processed))
         processed_text = " ".join(line["text"] for line in processed_lines).upper()
 
+        # Les bulletins portrait de faible résolution contiennent plusieurs
+        # tableaux avec une police minuscule. Si la lecture globale perd les
+        # repères essentiels, relire trois bandes agrandies améliore la
+        # détection sans modifier les autres types de documents.
+        height, width = image.shape[:2]
+        if document_type == "bulletin" and max(height, width) < 1500:
+            expected = ("PERIODE", "MATRICULE", "DATE D'EMBAUCHE", "FONCTION", "NET A PAYER")
+            normalized = processed_text.replace("É", "E").replace("À", "A")
+            if sum(marker in normalized for marker in expected) < 3:
+                regional_lines = self._read_bulletin_regions(image)
+                if self._business_document_score(regional_lines, "bulletin") > self._business_document_score(processed_lines, "bulletin"):
+                    logger.info("Bulletin petit : lecture ciblée des tableaux retenue")
+                    processed_lines = regional_lines
+                    processed_text = " ".join(line["text"] for line in processed_lines).upper()
+
         # Les fonds colorés et les motifs de sécurité des CNIE peuvent perdre
         # des caractères lors de la binarisation. Pour ces pages seulement,
         # on compare avec la lecture de l'image originale et on conserve la
@@ -127,6 +142,39 @@ class OCREngine:
                     return original_lines
 
         return processed_lines
+
+    def _read_bulletin_regions(self, image):
+        """OCR par bandes avec coordonnées remappées sur la page originale."""
+        height, width = image.shape[:2]
+        regions = ((0.00, 0.38), (0.32, 0.82), (0.74, 1.00))
+        collected = []
+        scale = 2.2
+        for start_ratio, end_ratio in regions:
+            y0, y1 = int(height * start_ratio), int(height * end_ratio)
+            crop = image[y0:y1, :]
+            enlarged = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            lines = self._prediction_to_lines(self.reader.predict(enlarged))
+            for line in lines:
+                box = line.get("bbox")
+                try:
+                    line["bbox"] = [
+                        [float(point[0]) / scale, float(point[1]) / scale + y0]
+                        for point in box
+                    ]
+                except (TypeError, ValueError, IndexError):
+                    pass
+                collected.append(line)
+
+        # Supprimer les doublons créés par le chevauchement des bandes.
+        unique = []
+        seen = set()
+        for line in sorted(collected, key=lambda item: float(item.get("confidence") or 0), reverse=True):
+            key = " ".join(str(line.get("text") or "").upper().split())
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(line)
+        return unique
 
     @staticmethod
     def _prediction_to_lines(raw_result):

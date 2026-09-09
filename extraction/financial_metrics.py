@@ -10,7 +10,8 @@ CREDIT_WORDS = ("mensualite credit", "echeance credit", "echeance pret", "prelev
                 "credit immobilier", "credit habitat", "credit auto", "credit consommation")
 EXCLUDED_WORDS = ("assurance", "remboursement anticipe", "solde du pret")
 EXTRA_INCOME_WORDS = ("prime", "virement complementaire", "revenu complementaire",
-                      "allocation", "loyer recu", "pension")
+                      "allocation", "loyer recu", "pension", "vir-inst de",
+                      "virement recu de")
 EXTRA_INCOME_EXCLUDED = ("salaire", "remboursement", "annulation", "contrepassation")
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,31 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
                 and any(word in description for word in EXTRA_INCOME_WORDS)
                 and not any(word in description for word in EXTRA_INCOME_EXCLUDED) and verified):
             eligible.append({**item, "month": day.strftime("%Y-%m")})
+    # Secours sur le texte tabulaire lorsque le le LLM oublie certaines
+    # transactions. « VIR-INST DE » désigne ici un virement entrant explicite.
+    if not eligible:
+        pattern = re.compile(
+            r"(\d{2}[/-]\d{2}[/-]\d{4})\s*\|\s*"
+            r"(VIR-INST\s+DE\s+[^|]{3,80}?)\s*\|\s*"
+            r"(?:\d{2}[/-]\d{2}[/-]\d{4})\s*\|\s*"
+            r"(\d{1,3}(?:[ .]\d{3})*|\d+)[,.](\d{2})",
+            re.I,
+        )
+        for page_item in pages:
+            page_number = page_item.get("page")
+            page_text = " ".join(str(page_item.get("text") or "").split())
+            if type(page_number) is not int:
+                continue
+            for match in pattern.finditer(page_text):
+                day = _date(match.group(1))
+                amount = _amount(f"{match.group(3)},{match.group(4)}")
+                if day is None or amount is None or amount <= 0:
+                    continue
+                eligible.append({
+                    "date": match.group(1), "description": match.group(2).strip(),
+                    "montant": amount, "type": "credit", "page": page_number,
+                    "quote": match.group(0), "month": day.strftime("%Y-%m"),
+                })
     if not eligible:
         return None
     monthly = {}
@@ -165,19 +191,19 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         monthly[item["month"]] = monthly.get(item["month"], 0.0) + float(item["montant"])
     values = list(monthly.values())
     median = statistics.median(values)
-    if len(values) < 2:
-        return None
-    if median == 0 or max(abs(v - median) / median for v in values) > 0.30:
+    regularity_proven = len(values) >= 2
+    if median == 0 or (regularity_proven and max(abs(v - median) / median for v in values) > 0.30):
         return None
     first = eligible[0]
     return {
-        "value": float(median), "confidence": 0.60,
+        "value": float(median),
+        "confidence": 0.60 if regularity_proven else 0.40,
         "source": {"document": Path(document_path).name, "sha256": document_sha256,
                    "page": first["page"], "quote": first["quote"], "verified": True,
                    "evidence": [{k: x.get(k) for k in ("date", "description", "montant", "page", "quote")}
                                 for x in eligible],
                    "method": "médiane des totaux mensuels de revenus complémentaires vérifiés",
-                   "regularity_proven": True},
+                   "regularity_proven": regularity_proven},
     }
 
 

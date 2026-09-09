@@ -84,12 +84,75 @@ def render_declared_form(document_type, client_id):
 
 def render_document_review(result, document_type, document_id, advisor_id, session_id, confirmations):
     fields = result["validation_result"]["fields"]
+    review_mode = st.radio(
+        "Mode de vérification",
+        ("Validation rapide", "Correction détaillée"),
+        horizontal=True,
+        key=f"review_mode_{document_id}",
+    )
     st.caption("Vérifiez les informations ci-dessous. Vous pouvez les corriger avant de continuer.")
     original = Path(result.get("pdf_path", ""))
     upload_root = Path("data/uploads").resolve()
     if original.is_file() and original.resolve().is_relative_to(upload_root):
-        st.download_button("Consulter le document original", original.read_bytes(),
-                           file_name=original.name, key=f"original_{document_id}")
+        st.download_button(
+            "Consulter le document original", original.read_bytes(),
+            file_name=original.name, key=f"original_{document_id}",
+        )
+    quick = {
+        name: decision for name, decision in fields.items()
+        if name not in IDENTITY_METADATA_FIELDS | {"transactions"}
+        and decision.get("value") is not None
+    }
+    if review_mode == "Validation rapide":
+        st.dataframe(
+            [{"Information": LABELS.get(name, name.replace("_", " ").capitalize()),
+              # Une seule dtype texte évite ArrowTypeError lorsque le résumé
+              # mélange montants, dates, chaînes et listes.
+              "Valeur": (
+                  json.dumps(decision.get("value"), ensure_ascii=False)
+                  if isinstance(decision.get("value"), (list, dict))
+                  else str(decision.get("value"))
+              )} for name, decision in quick.items()],
+            hide_index=True,
+            width="stretch",
+        )
+        verified_all = st.checkbox(
+            "J'ai comparé toutes ces valeurs avec le justificatif",
+            key=f"quick_verified_{document_id}",
+        )
+        if st.button("Confirmer toutes les valeurs", key=f"quick_confirm_{document_id}",
+                     disabled=not verified_all or not quick):
+            try:
+                for name, decision in quick.items():
+                    record = make_confirmation(
+                        document_type, name, decision["value"], decision,
+                        document_id=document_id, advisor_id=advisor_id, source_checked=True,
+                    )
+                    audit.log_human_confirmation(
+                        document_path=result.get("pdf_path", document_id),
+                        document_type=document_type, field_name=name,
+                        confirmed_value=record["value"], advisor_id=advisor_id,
+                        session_id=session_id, original_value=record["original_value"],
+                        source=record["source"], confirmation_status=record["status"],
+                    )
+                    confirmations[name] = record
+            except Exception as exc:
+                st.error(f"Confirmation groupée non enregistrée : {exc}")
+            else:
+                st.success("Toutes les valeurs affichées sont confirmées.")
+                st.rerun()
+        st.info("Choisissez « Correction détaillée » uniquement si une valeur doit être modifiée.")
+        try:
+            quick_csv = export_confirmed_csv(result, document_type, confirmations, document_id)
+        except (ValueError, TypeError) as exc:
+            st.error(f"Export bloqué : {exc}")
+            quick_csv = None
+        st.download_button(
+            "Télécharger mes informations vérifiées (CSV)", quick_csv or b"",
+            file_name=f"champs_confirmes_{document_type}.csv", mime="text/csv",
+            disabled=quick_csv is None, key=f"quick_export_{document_id}",
+        )
+        return
     observed_income = None
     if document_type == "releve":
         transactions = (fields.get("transactions") or {}).get("value") or []

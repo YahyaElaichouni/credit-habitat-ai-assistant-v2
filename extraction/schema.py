@@ -163,8 +163,6 @@ class BulletinSchema(BaseModel):
     employeur: ExtractedField[str] = Field(default_factory=ExtractedField)
     matricule: ExtractedField[str] = Field(default_factory=ExtractedField)
     poste: ExtractedField[str] = Field(default_factory=ExtractedField)
-    compte_bancaire: ExtractedField[str] = Field(default_factory=ExtractedField)
-
     date_embauche: ExtractedField[str] = Field(default_factory=ExtractedField)
     periode: ExtractedField[str] = Field(default_factory=ExtractedField)
 
