@@ -25,9 +25,6 @@ indépendamment.
 import logging
 from typing import Any, Dict, Optional
 
-from workflows.chat_workflow import workflow as chat_workflow
-from workflows.document_workflow import workflow as document_workflow
-
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +44,10 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         """Route vers le pipeline d'extraction documentaire
         (contrôle -> OCR -> extraction -> validation -> audit)."""
+
+        # Import à la demande : PaddleOCR, LangGraph et les dépendances du
+        # pipeline documentaire ne retardent plus l'affichage de l'accueil.
+        from workflows.document_workflow import workflow as document_workflow
 
         logger.info(
             "[Orchestrator] Requête document : %s (%s)",
@@ -73,6 +74,10 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         """Route vers le pipeline conversationnel RAG
         (retrieval -> décision de périmètre -> génération -> audit)."""
+
+        # Import à la première question seulement. Cela évite de charger
+        # sentence-transformers, PyTorch et FAISS au lancement de Streamlit.
+        from workflows.chat_workflow import workflow as chat_workflow
 
         logger.info("[Orchestrator] Requête conversationnelle : %s", question)
 

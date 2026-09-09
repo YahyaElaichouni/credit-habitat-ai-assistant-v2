@@ -22,6 +22,15 @@ LABELS = {
     "revenus_complementaires": "Revenus complémentaires mensuels (MAD)",
 }
 IDENTITY_METADATA_FIELDS = {"identite_ambigue", "noms_non_attribues"}
+REVIEW_FIELDS = {
+    "bulletin": ("nom", "prenom", "employeur", "poste", "date_embauche", "periode",
+                 "salaire_brut", "total_retenues", "salaire_net"),
+    "releve": ("banque", "periode_debut", "periode_fin", "solde_final",
+               "charge_mensuelle_credits", "revenus_complementaires"),
+    "carte_identite": ("nom", "prenom", "cin", "date_naissance", "lieu_naissance",
+                       "date_expiration", "adresse"),
+    "compromis": ("prix_vente", "adresse_bien", "date_signature"),
+}
 
 
 def _normalized_label(value):
@@ -85,8 +94,8 @@ def render_declared_form(document_type, client_id):
 def render_document_review(result, document_type, document_id, advisor_id, session_id, confirmations):
     fields = result["validation_result"]["fields"]
     review_mode = st.radio(
-        "Mode de vérification",
-        ("Validation rapide", "Correction détaillée"),
+        "Comment souhaitez-vous vérifier vos informations ?",
+        ("Vérification guidée", "Voir et corriger tous les détails"),
         horizontal=True,
         key=f"review_mode_{document_id}",
     )
@@ -98,12 +107,18 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
             "Consulter le document original", original.read_bytes(),
             file_name=original.name, key=f"original_{document_id}",
         )
+    priority_names = set(REVIEW_FIELDS.get(document_type, fields))
     quick = {
         name: decision for name, decision in fields.items()
-        if name not in IDENTITY_METADATA_FIELDS | {"transactions"}
+        if name in priority_names
         and decision.get("value") is not None
     }
-    if review_mode == "Validation rapide":
+    missing_priority = [
+        name for name in REVIEW_FIELDS.get(document_type, ())
+        if (fields.get(name) or {}).get("value") is None
+    ]
+    if review_mode == "Vérification guidée":
+        st.markdown("### Informations utiles pour votre simulation")
         st.dataframe(
             [{"Information": LABELS.get(name, name.replace("_", " ").capitalize()),
               # Une seule dtype texte évite ArrowTypeError lorsque le résumé
@@ -112,12 +127,24 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
                   json.dumps(decision.get("value"), ensure_ascii=False)
                   if isinstance(decision.get("value"), (list, dict))
                   else str(decision.get("value"))
-              )} for name, decision in quick.items()],
+              ),
+              "Contrôle": "À vérifier" if decision.get("status") == "signale" else "Prêt"
+              } for name, decision in quick.items()],
             hide_index=True,
             width="stretch",
         )
+        if missing_priority:
+            st.warning(
+                "Informations à compléter : "
+                + ", ".join(LABELS.get(name, name.replace("_", " ").capitalize())
+                            for name in missing_priority)
+            )
+            if st.button("Compléter ou corriger ces informations",
+                         key=f"open_details_{document_id}"):
+                st.session_state[f"review_mode_{document_id}"] = "Voir et corriger tous les détails"
+                st.rerun()
         verified_all = st.checkbox(
-            "J'ai comparé toutes ces valeurs avec le justificatif",
+            "J'ai vérifié ce résumé avec mes justificatifs",
             key=f"quick_verified_{document_id}",
         )
         if st.button("Confirmer toutes les valeurs", key=f"quick_confirm_{document_id}",
@@ -141,7 +168,7 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
             else:
                 st.success("Toutes les valeurs affichées sont confirmées.")
                 st.rerun()
-        st.info("Choisissez « Correction détaillée » uniquement si une valeur doit être modifiée.")
+        st.info("Ouvrez les détails uniquement lorsqu'une valeur manque ou doit être corrigée.")
         try:
             quick_csv = export_confirmed_csv(result, document_type, confirmations, document_id)
         except (ValueError, TypeError) as exc:

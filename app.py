@@ -30,6 +30,10 @@ import streamlit as st
 from agents.orchestrator import Orchestrator
 from config.settings import settings
 from database import audit
+from database.customer_accounts import (
+    authenticate, create_customer, delete_document, load_documents, load_project,
+    save_document, save_project,
+)
 from extraction.schema import DOCUMENT_SCHEMAS
 from ui.document_review import render_declared_form, render_document_review
 from ui.client_summary import build_client_summary, render_client_summary
@@ -119,16 +123,15 @@ def inject_app_styles():
             font-weight: 700;
         }
         .block-container {
-            max-width: 1280px;
+            max-width: 1180px;
             padding-top: 2rem;
             padding-bottom: 3rem;
-            padding-right: 390px;
         }
         .st-key-assistant_dock {
             position: fixed;
             right: 1.25rem;
-            bottom: 1rem;
-            width: 350px;
+            bottom: 1.25rem;
+            width: min(370px, calc(100vw - 2rem));
             z-index: 999;
         }
         .st-key-assistant_dock [data-testid="stVerticalBlockBorderWrapper"] {
@@ -179,6 +182,13 @@ def inject_app_styles():
             color: #073b2c;
             font-size: 1.5rem;
             font-weight: 800;
+        }
+        .journey-note {
+            padding: .85rem 1rem;
+            border-radius: .9rem;
+            background: #edf7f2;
+            border: 1px solid rgba(0,122,77,.16);
+            color: #164a38;
         }
         .ca-article {
             min-height: 235px;
@@ -263,20 +273,47 @@ def _go_to(page):
     st.session_state.page = page
 
 
+def current_client_documents():
+    return {
+        doc_id: document for doc_id, document in st.session_state.documents.items()
+        if document.get("client_id") == st.session_state.current_client_id
+    }
+
+
+def dossier_readiness():
+    """État métier réel utilisé pour verrouiller/déverrouiller la simulation."""
+    documents = current_client_documents()
+    rows, business_complete = build_client_summary(documents) if documents else ([], False)
+    missing = [row["Champ"] for row in rows if row["Statut"] in ("Manquant", "Conflit")]
+    required_documents = {
+        "bulletin": "Bulletin de paie",
+        "releve": "Relevé bancaire",
+    }
+    available_types = {
+        document.get("type") for document in documents.values()
+        if document.get("status") == "completed"
+    }
+    missing.extend(label for doc_type, label in required_documents.items()
+                   if doc_type not in available_types)
+    return documents, rows, business_complete and not missing, missing
+
+
 def render_customer_journey():
     """Parcours permanent : le client sait toujours où il se trouve."""
-    documents = list(st.session_state.documents.values())
+    documents, _, dossier_complete, _ = dossier_readiness()
+    account_ready = st.session_state.account_created
     has_documents = bool(documents)
     has_result = st.session_state.last_result is not None
     current_page = st.session_state.page
 
     st.caption("VOTRE PARCOURS DE SIMULATION")
-    steps = st.columns(4, gap="small")
+    steps = st.columns(5, gap="small")
     definitions = [
-        ("1. Mon projet", "Accueil", True, current_page == "Accueil", ":material/home:"),
-        ("2. Mes documents", "Extraction", True, current_page == "Extraction" and not has_result, ":material/upload_file:"),
-        ("3. Vérification", "Extraction", has_documents, current_page == "Extraction" and has_result, ":material/fact_check:"),
-        ("4. Ma simulation", "Simulation", has_result, current_page == "Simulation", ":material/calculate:"),
+        ("1. Mon espace", "Accueil", True, not account_ready, ":material/person:"),
+        ("2. Mon offre", "Accueil", account_ready, account_ready and current_page == "Accueil", ":material/home:"),
+        ("3. Mes documents", "Extraction", account_ready, current_page == "Extraction" and not has_result, ":material/upload_file:"),
+        ("4. Vérification", "Extraction", has_documents, current_page == "Extraction" and has_result, ":material/fact_check:"),
+        ("5. Ma simulation", "Simulation", dossier_complete, current_page == "Simulation", ":material/calculate:"),
     ]
     for column, (label, page, enabled, active, icon) in zip(steps, definitions):
         with column:
@@ -291,21 +328,15 @@ def render_customer_journey():
                 args=(page,),
             )
 
-    completed = 0
-    if has_documents:
-        completed = 1
-    if has_result:
-        completed = 2
-    if current_page == "Simulation":
-        completed = 3
-    st.progress(completed / 3, text=f"Étape {completed + 1} sur 4")
+    completed = int(account_ready) + int(has_documents) + int(has_result) + int(dossier_complete)
+    st.progress(completed / 4, text=f"Progression du dossier : {completed}/4 étapes terminées")
 
 
 def render_assistant_dock(advisor_id):
     """Assistant compact et disponible depuis toutes les étapes."""
     with st.container(key="assistant_dock", border=True):
         title_col, action_col = st.columns([5, 1], vertical_alignment="center")
-        title_col.markdown("**:material/chat: Besoin d’aide ?**")
+        title_col.markdown("**:material/chat: Assistant habitat**")
         if action_col.button(
             "Réduire" if st.session_state.assistant_open else "Ouvrir",
             icon=":material/close:" if st.session_state.assistant_open else ":material/chat:",
@@ -316,15 +347,16 @@ def render_assistant_dock(advisor_id):
             st.rerun()
 
         if not st.session_state.assistant_open:
-            st.caption("Posez une question sur votre crédit habitat.")
+            st.caption("Une question ? Je vous accompagne.")
             return
 
-        st.caption("Je vous accompagne pendant votre simulation.")
-        history = st.session_state.chat_history[-3:]
+        st.caption("Offres, documents, mensualité : posez votre question.")
+        history = st.session_state.chat_history[-5:]
         if not history:
             suggestions = {
                 "Documents nécessaires": "Quels documents dois-je fournir ?",
                 "Comprendre la mensualité": "Comment est calculée la mensualité ?",
+                "Conditions": "Quelles sont les principales conditions du crédit habitat ?",
             }
             selected = st.pills(
                 "Questions proposées",
@@ -335,7 +367,7 @@ def render_assistant_dock(advisor_id):
             suggested_question = suggestions.get(selected)
         else:
             suggested_question = None
-            with st.container(height=210, border=False):
+            with st.container(height=280, border=False):
                 for exchange in history:
                     with st.chat_message("user"):
                         st.write(exchange["question"])
@@ -352,7 +384,7 @@ def render_assistant_dock(advisor_id):
         if not question:
             return
 
-        with st.spinner("Recherche dans les informations Crédit Habitat…"):
+        with st.spinner("Préparation de votre réponse…"):
             try:
                 answer = orchestrator.handle_question(
                     question=question,
@@ -590,7 +622,13 @@ if "last_error" not in st.session_state:
     st.session_state.last_error = None
 
 if "assistant_open" not in st.session_state:
-    st.session_state.assistant_open = True
+    st.session_state.assistant_open = False
+
+if "account_created" not in st.session_state:
+    st.session_state.account_created = False
+
+if "customer_profile" not in st.session_state:
+    st.session_state.customer_profile = {}
 
 # L'ancienne page de chat est remplacée par l'assistant permanent à droite.
 if st.session_state.page == "Assistant":
@@ -604,7 +642,10 @@ inject_app_styles()
 
 with st.sidebar:
     st.markdown("## Crédit Habitat")
-    st.caption("Votre simulation, étape par étape")
+    if st.session_state.account_created:
+        st.caption(f"Bonjour {st.session_state.customer_profile.get('prenom', '')}")
+    else:
+        st.caption("Créez votre espace pour commencer")
     st.divider()
 
     # Identifiant conservé uniquement pour l'audit interne.
@@ -615,11 +656,12 @@ with st.sidebar:
         st.session_state.page = "Accueil"
         st.rerun()
     
-    if st.button("Mes documents", icon=":material/description:", width="stretch", type="primary" if st.session_state.page == "Extraction" else "secondary", disabled=st.session_state.processing):
+    if st.button("Mes documents", icon=":material/description:", width="stretch", type="primary" if st.session_state.page == "Extraction" else "secondary", disabled=st.session_state.processing or not st.session_state.account_created):
         st.session_state.page = "Extraction"
         st.rerun()
 
-    if st.button("Ma simulation", icon=":material/calculate:", width="stretch", type="primary" if st.session_state.page == "Simulation" else "secondary", disabled=st.session_state.processing):
+    _, _, simulation_ready, _ = dossier_readiness()
+    if st.button("Ma simulation", icon=":material/calculate:", width="stretch", type="primary" if st.session_state.page == "Simulation" else "secondary", disabled=st.session_state.processing or not simulation_ready):
         st.session_state.page = "Simulation"
         st.rerun()
     
@@ -627,20 +669,19 @@ with st.sidebar:
         st.caption("Vos justificatifs servent uniquement à préparer cette simulation.")
         st.caption("Vous gardez le contrôle : chaque information doit être vérifiée avant utilisation.")
 
-    st.markdown("**Mon dossier**")
-    
-    if st.button("Sauvegarder mon dossier", width="stretch"):
-        if save_session_state():
-            st.success("Dossier sauvegardé")
-        else:
-            st.error("❌ Erreur lors de la sauvegarde")
-    
-    if st.button("Reprendre mon dossier", width="stretch"):
-        if load_session_state(st.session_state.session_id):
-            st.success("Dossier restauré")
+    if st.session_state.account_created:
+        st.markdown("**Mon compte**")
+        st.caption(st.session_state.customer_profile.get("email", ""))
+        if st.button("Se déconnecter", icon=":material/logout:", width="stretch"):
+            for key in (
+                "documents", "current_doc_id", "confirmed_fields", "last_result",
+                "chat_history", "customer_profile",
+            ):
+                st.session_state.pop(key, None)
+            st.session_state.account_created = False
+            st.session_state.current_client_id = None
+            st.session_state.page = "Accueil"
             st.rerun()
-        else:
-            st.error("Aucun dossier sauvegardé pour cette session")
 
 # =========================================================
 # APPLICATION DU THÈME
@@ -660,6 +701,75 @@ render_customer_journey()
 # =========================================================
 
 if st.session_state.page == "Accueil":
+    if not st.session_state.account_created:
+        st.markdown(
+            """
+            <section class="ca-hero">
+                <div class="ca-eyebrow">ÉTAPE 1 · ESPACE CLIENT</div>
+                <h1>Commençons votre projet habitat.</h1>
+                <p>Créez votre espace personnel pour sauvegarder vos justificatifs,
+                reprendre votre parcours et accéder à votre simulation.</p>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
+        login_tab, signup_tab = st.tabs(["Se connecter", "Créer un compte"])
+        with login_tab:
+            with st.form("customer_login", border=True):
+                login_email = st.text_input("Adresse e-mail", key="login_email")
+                login_password = st.text_input("Mot de passe", type="password", key="login_password")
+                login_submit = st.form_submit_button("Se connecter", type="primary", width="stretch")
+                if login_submit:
+                    customer = authenticate(login_email, login_password)
+                    if customer is None:
+                        st.error("Adresse e-mail ou mot de passe incorrect.")
+                    else:
+                        st.session_state.customer_profile = {
+                            "prenom": customer["first_name"], "nom": customer["last_name"],
+                            "email": customer["email"], "telephone": customer["phone"],
+                        }
+                        st.session_state.current_client_id = customer["id"]
+                        st.session_state.documents = load_documents(customer["id"])
+                        st.session_state.account_created = True
+                        st.rerun()
+        with signup_tab:
+            with st.form("customer_signup", border=True):
+                left, right = st.columns(2)
+                prenom = left.text_input("Prénom *", key="signup_first_name")
+                nom = right.text_input("Nom *", key="signup_last_name")
+                email = left.text_input("Adresse e-mail *", key="signup_email")
+                telephone = right.text_input("Téléphone *", key="signup_phone")
+                password = left.text_input("Mot de passe *", type="password", key="signup_password")
+                confirmation = right.text_input("Confirmer le mot de passe *", type="password",
+                                                key="signup_password_confirmation")
+                consent = st.checkbox(
+                    "J'accepte que mes informations soient utilisées pour préparer cette simulation."
+                )
+                submitted = st.form_submit_button(
+                    "Créer mon compte", type="primary", width="stretch"
+                )
+                if submitted:
+                    if password != confirmation:
+                        st.error("Les deux mots de passe ne correspondent pas.")
+                    elif not consent:
+                        st.error("Votre accord est nécessaire pour poursuivre.")
+                    else:
+                        try:
+                            customer = create_customer(email, password, prenom, nom, telephone)
+                        except ValueError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.session_state.customer_profile = {
+                                "prenom": customer["first_name"], "nom": customer["last_name"],
+                                "email": customer["email"], "telephone": customer["phone"],
+                            }
+                            st.session_state.current_client_id = customer["id"]
+                            st.session_state.documents = load_documents(customer["id"])
+                            st.session_state.account_created = True
+                            st.rerun()
+        st.caption("Vos identifiants sont enregistrés localement ; le mot de passe n'est jamais stocké en clair.")
+        st.stop()
+
     client_badge = '<span class="ca-tag">SIMULATION PERSONNELLE ET NON CONTRACTUELLE</span>'
     st.markdown(
         f"""
@@ -674,13 +784,46 @@ if st.session_state.page == "Accueil":
         unsafe_allow_html=True,
     )
 
+    saved_project = load_project(st.session_state.current_client_id) or {}
+    with st.expander("Personnaliser mon projet habitat", expanded=not bool(saved_project)):
+        with st.form("housing_project_profile"):
+            project_left, project_right = st.columns(2)
+            city = project_left.text_input("Ville du projet", value=saved_project.get("city") or "")
+            property_options = ["Appartement", "Maison", "Terrain + construction", "Autre"]
+            saved_type = saved_project.get("property_type") or property_options[0]
+            property_type = project_right.selectbox(
+                "Type de bien", property_options,
+                index=property_options.index(saved_type) if saved_type in property_options else 0,
+            )
+            purchase_price = project_left.number_input(
+                "Budget estimé (MAD)", min_value=0.0,
+                value=float(saved_project.get("purchase_price") or 600000), step=10000.0,
+            )
+            contribution = project_right.number_input(
+                "Apport personnel (MAD)", min_value=0.0,
+                value=float(saved_project.get("contribution") or 100000), step=5000.0,
+            )
+            duration_years = st.slider(
+                "Durée souhaitée", 5, 30, int(saved_project.get("duration_years") or 20),
+                format="%d ans",
+            )
+            if st.form_submit_button("Enregistrer mon projet", type="primary", width="stretch"):
+                if contribution > purchase_price:
+                    st.error("L'apport ne peut pas dépasser le prix estimé du bien.")
+                else:
+                    save_project(
+                        st.session_state.current_client_id, city.strip(), property_type,
+                        purchase_price, contribution, duration_years,
+                    )
+                    st.success("Votre projet est enregistré dans votre compte.")
+
     action_left, action_right = st.columns([1.15, 0.85], gap="large")
     with action_left.container(border=True, height="stretch"):
-        st.markdown("### Démarrer ma simulation")
-        st.write("Ajoutez vos justificatifs puis vérifiez les informations utilisées pour le calcul.")
+        st.markdown("### Une offre adaptée à votre projet")
+        st.write("Estimez un financement pour l'acquisition de votre logement, avec une durée et une mensualité adaptées à votre situation.")
         st.caption("Pièce d'identité · Bulletin de paie · Relevé de compte · Compromis")
         if st.button(
-            "Ajouter mes documents",
+            "Simuler mon crédit habitat",
             icon=":material/arrow_forward:",
             type="primary",
             width="stretch",
@@ -751,8 +894,11 @@ if st.session_state.page == "Accueil":
 # =========================================================
 
 elif st.session_state.page == "Extraction":
+    if not st.session_state.account_created:
+        st.session_state.page = "Accueil"
+        st.rerun()
     st.title("Mes justificatifs")
-    st.caption("Ajoutez vos documents. Vous pourrez vérifier chaque information avant la simulation.")
+    st.caption("Déposez chaque justificatif, contrôlez son statut, puis vérifiez les informations détectées.")
     
     # -----------------------------------------------------
     # LISTE DES DOCUMENTS DU CLIENT
@@ -928,9 +1074,10 @@ elif st.session_state.page == "Extraction":
                 st.caption(f"📦 Taille totale : {total_size / 1024:.1f} KB")
     
     with col_data:
-        st.subheader("2. Informations déclarées")
-        
-        declared_data = render_declared_form(document_type, st.session_state.current_client_id)
+        st.subheader("2. Vérification facultative")
+        st.caption("Vous pouvez laisser cette partie vide : le document sera analysé automatiquement.")
+        with st.expander("Comparer avec les informations que je connais"):
+            declared_data = render_declared_form(document_type, st.session_state.current_client_id)
     
     # -----------------------------------------------------
     # ERREUR PERSISTEE (affichée après un st.rerun() suite à un échec)
@@ -1020,6 +1167,10 @@ elif st.session_state.page == "Extraction":
             st.session_state.documents[doc_id]["status"] = "completed"
             st.session_state.last_result = result
             st.session_state.confirmed_fields = {}
+            save_document(
+                st.session_state.current_client_id, doc_id,
+                st.session_state.documents[doc_id],
+            )
             
             # Log dans l'audit
             try:
@@ -1114,12 +1265,24 @@ elif st.session_state.page == "Extraction":
                         advisor_id, st.session_state.session_id, confirmations,
                     )
                     st.session_state.confirmed_fields = confirmations
+                    save_document(
+                        st.session_state.current_client_id,
+                        st.session_state.current_doc_id,
+                        current_doc,
+                    )
 
+                    _, _, dossier_complete, missing_for_simulation = dossier_readiness()
+                    if not dossier_complete:
+                        st.info(
+                            "La simulation sera accessible après vérification de : "
+                            + ", ".join(missing_for_simulation)
+                        )
                     if st.button(
                         "Continuer vers ma simulation",
                         icon=":material/arrow_forward:",
                         type="primary",
                         width="stretch",
+                        disabled=not dossier_complete,
                         key=f"continue_simulation_{st.session_state.current_doc_id}",
                     ):
                         st.session_state.page = "Simulation"
@@ -1139,6 +1302,10 @@ elif st.session_state.page == "Extraction":
                     if st.button("🗑️ Supprimer ce document", width="stretch"):
                         if st.session_state.current_doc_id in st.session_state.documents:
                             del st.session_state.documents[st.session_state.current_doc_id]
+                        delete_document(
+                            st.session_state.current_client_id,
+                            st.session_state.current_doc_id,
+                        )
                         st.session_state.current_doc_id = None
                         st.session_state.last_result = None
                         st.session_state.confirmed_fields = {}
@@ -1149,13 +1316,23 @@ elif st.session_state.page == "Extraction":
 # =========================================================
 
 elif st.session_state.page == "Simulation":
+    client_docs, readiness_rows, dossier_complete, missing_for_simulation = dossier_readiness()
+    if not st.session_state.account_created:
+        st.session_state.page = "Accueil"
+        st.rerun()
+    if not dossier_complete:
+        st.title("Votre simulation n'est pas encore disponible")
+        st.warning(
+            "Vérifiez d'abord les informations indispensables : "
+            + ", ".join(missing_for_simulation or ["revenu, ancienneté et charges en cours"])
+        )
+        if st.button("Retourner à mes documents", type="primary", width="stretch"):
+            st.session_state.page = "Extraction"
+            st.rerun()
+        st.stop()
     st.title("Ma simulation de crédit habitat")
     st.caption("Modifiez les hypothèses pour obtenir une estimation immédiate et non contractuelle.")
 
-    client_docs = {
-        doc_id: document for doc_id, document in st.session_state.documents.items()
-        if document.get("client_id") == st.session_state.current_client_id
-    }
     if client_docs:
         render_client_summary(client_docs)
     else:
@@ -1163,19 +1340,23 @@ elif st.session_state.page == "Simulation":
 
     with st.container(border=True):
         st.markdown("### Mon projet")
+        saved_project = load_project(st.session_state.current_client_id) or {}
         project_left, project_right = st.columns(2)
         with project_left:
             property_value = st.number_input(
-                "Prix du bien (MAD)", min_value=0.0, value=600000.0,
+                "Prix du bien (MAD)", min_value=0.0,
+                value=float(saved_project.get("purchase_price") or 600000),
                 step=10000.0, format="%.2f", key="simulation_property_value",
             )
             contribution = st.number_input(
-                "Mon apport personnel (MAD)", min_value=0.0, value=100000.0,
+                "Mon apport personnel (MAD)", min_value=0.0,
+                value=float(saved_project.get("contribution") or 100000),
                 step=5000.0, format="%.2f", key="simulation_contribution",
             )
         with project_right:
             duration_years = st.slider(
-                "Durée souhaitée", min_value=5, max_value=30, value=20,
+                "Durée souhaitée", min_value=5, max_value=30,
+                value=int(saved_project.get("duration_years") or 20),
                 format="%d ans", key="simulation_duration",
             )
             annual_rate = st.number_input(
