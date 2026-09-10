@@ -31,8 +31,8 @@ from agents.orchestrator import Orchestrator
 from config.settings import settings
 from database import audit
 from database.customer_accounts import (
-    authenticate, create_customer, delete_document, load_documents, load_project,
-    save_document, save_project,
+    authenticate, create_customer, delete_all_documents, delete_document,
+    load_documents, load_project, save_document, save_project,
 )
 from extraction.schema import DOCUMENT_SCHEMAS
 from ui.document_review import render_declared_form, render_document_review
@@ -332,6 +332,183 @@ def current_client_documents():
         doc_id: document for doc_id, document in st.session_state.documents.items()
         if document.get("client_id") == st.session_state.current_client_id
     }
+
+
+def _remove_uploaded_files(paths):
+    """Supprime uniquement des fichiers situés dans le répertoire d'upload."""
+    upload_root = Path("data/uploads").resolve()
+    failures = []
+    for raw_path in set(filter(None, paths)):
+        try:
+            candidate = Path(raw_path).resolve()
+            if not candidate.is_relative_to(upload_root):
+                failures.append(Path(raw_path).name)
+                continue
+            if candidate.is_file():
+                candidate.unlink()
+        except (OSError, RuntimeError):
+            failures.append(Path(raw_path).name)
+    return failures
+
+
+def _clear_document_session(documents):
+    """Retire l'état lié aux justificatifs sans déconnecter le client."""
+    document_ids = tuple(documents)
+    client_id = st.session_state.current_client_id
+    for key in list(st.session_state):
+        key_text = str(key)
+        if any(document_id in key_text for document_id in document_ids):
+            st.session_state.pop(key, None)
+        elif key_text.startswith(f"declared_{client_id}_"):
+            st.session_state.pop(key, None)
+    for key, default in (
+        ("current_doc_id", None),
+        ("confirmed_fields", {}),
+        ("last_result", None),
+    ):
+        st.session_state[key] = default
+
+
+@st.dialog("Recommencer avec de nouveaux justificatifs")
+def reset_documents_dialog():
+    """Demande une confirmation avant la réinitialisation du dossier documentaire."""
+    documents = current_client_documents()
+    st.warning(
+        "Cette action supprimera tous vos justificatifs ainsi que les informations "
+        "extraites, corrigées et confirmées à partir de ces documents."
+    )
+    st.info("Votre compte client et les informations de votre projet immobilier seront conservés.")
+    confirmed = st.checkbox(
+        "Je comprends que les justificatifs devront être déposés et vérifiés de nouveau",
+        key="confirm_reset_all_documents",
+    )
+    if st.button(
+        "Supprimer les justificatifs",
+        icon=":material/delete_sweep:",
+        type="primary",
+        width="stretch",
+        disabled=not confirmed,
+        key="reset_all_documents_confirm",
+    ):
+        try:
+            stored_paths = delete_all_documents(st.session_state.current_client_id)
+        except Exception as exc:
+            st.error(f"Réinitialisation impossible : {exc}")
+            return
+        session_paths = [document.get("document_path") for document in documents.values()]
+        failures = _remove_uploaded_files(stored_paths + session_paths)
+        _clear_document_session(documents)
+        for document_id in documents:
+            st.session_state.documents.pop(document_id, None)
+        audit.log_event(
+            "client_documents_reset",
+            advisor_id=f"client_portal_{st.session_state.session_id[:8]}",
+            session_id=st.session_state.session_id,
+            decision="confirme_par_client",
+            details={"documents_supprimes": len(documents), "fichiers_non_supprimes": failures},
+        )
+        st.session_state.documents_reset_notice = (
+            "Vos anciens justificatifs et leurs informations ont été supprimés. "
+            "Vous pouvez déposer les nouveaux documents."
+        )
+        st.rerun()
+
+
+def _confirmed_candidates(documents, field):
+    candidates = []
+    for document_id, document in documents.items():
+        record = (document.get("confirmed_fields") or {}).get(field)
+        if not isinstance(record, dict):
+            continue
+        if record.get("document_id") != document_id:
+            continue
+        if record.get("status") not in ("confirme", "corrige"):
+            continue
+        if record.get("value") is None:
+            continue
+        candidates.append({
+            "document_id": document_id,
+            "filename": document.get("filename") or "Document",
+            "value": record["value"],
+            "record": record,
+        })
+    return candidates
+
+
+def render_conflict_resolution(documents, rows, advisor_id):
+    """Laisse le client choisir explicitement la source à conserver."""
+    conflicts = [row for row in rows if row.get("Statut") == "Conflit"]
+    if not conflicts:
+        return
+    st.subheader("Résoudre les informations contradictoires")
+    st.warning(
+        "Deux justificatifs contiennent des valeurs différentes. Choisissez la valeur "
+        "qui correspond à votre situation actuelle après consultation des documents."
+    )
+    for row in conflicts:
+        field = row["field"]
+        candidates = _confirmed_candidates(documents, field)
+        if len(candidates) < 2:
+            continue
+        with st.container(border=True):
+            st.markdown(f"**{row['Champ']}**")
+            st.dataframe(
+                [{
+                    "Valeur": str(candidate["value"]),
+                    "Justificatif": candidate["filename"],
+                    "Page": str((candidate["record"].get("source") or {}).get("page") or "—"),
+                    "Extrait": str((candidate["record"].get("source") or {}).get("quote") or "—"),
+                } for candidate in candidates],
+                hide_index=True,
+                width="stretch",
+            )
+            choice = st.selectbox(
+                "Valeur à conserver",
+                options=range(len(candidates)),
+                format_func=lambda index: (
+                    f"{candidates[index]['value']} — {candidates[index]['filename']}"
+                ),
+                key=f"conflict_choice_{field}",
+            )
+            checked = st.checkbox(
+                "J'ai comparé les justificatifs et je confirme ce choix",
+                key=f"conflict_checked_{field}",
+            )
+            if st.button(
+                "Conserver cette valeur",
+                icon=":material/check_circle:",
+                type="primary",
+                disabled=not checked,
+                key=f"resolve_conflict_{field}",
+            ):
+                selected = candidates[choice]
+                discarded = []
+                for candidate in candidates:
+                    if candidate["document_id"] == selected["document_id"]:
+                        continue
+                    document = documents[candidate["document_id"]]
+                    (document.get("confirmed_fields") or {}).pop(field, None)
+                    save_document(
+                        st.session_state.current_client_id,
+                        candidate["document_id"],
+                        document,
+                    )
+                    discarded.append({
+                        "document": candidate["filename"],
+                        "value": candidate["value"],
+                    })
+                audit.log_event(
+                    "client_conflict_resolved",
+                    advisor_id=advisor_id,
+                    session_id=st.session_state.session_id,
+                    document_path=selected["filename"],
+                    field_name=field,
+                    value=selected["value"],
+                    decision="valeur_conservee_par_client",
+                    details={"valeurs_ecartees": discarded},
+                )
+                st.toast("Conflit résolu et choix sauvegardé.", icon=":material/check_circle:")
+                st.rerun()
 
 
 def dossier_readiness():
@@ -980,6 +1157,9 @@ elif st.session_state.page == "Extraction":
         st.rerun()
     st.title("Mes justificatifs")
     st.caption("Déposez chaque justificatif, contrôlez son statut, puis vérifiez les informations détectées.")
+    reset_notice = st.session_state.pop("documents_reset_notice", None)
+    if reset_notice:
+        st.success(reset_notice, icon=":material/check_circle:")
     
     # -----------------------------------------------------
     # LISTE DES DOCUMENTS DU CLIENT
@@ -993,6 +1173,8 @@ elif st.session_state.page == "Extraction":
     
     if client_docs:
         render_client_summary(client_docs)
+        summary_rows, _ = build_client_summary(client_docs)
+        render_conflict_resolution(client_docs, summary_rows, advisor_id)
         st.subheader("Mes documents")
         
         # Afficher les documents dans une grille
@@ -1039,6 +1221,14 @@ elif st.session_state.page == "Extraction":
                         st.caption(f"📅 {doc_data.get('timestamp')[:16]}")
                 
                 st.write("")  # Espacement
+
+        with st.container(horizontal=True, horizontal_alignment="right"):
+            if st.button(
+                "Recommencer avec de nouveaux justificatifs",
+                icon=":material/delete_sweep:",
+                key="reset_all_documents",
+            ):
+                reset_documents_dialog()
         
         st.divider()
     

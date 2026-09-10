@@ -202,4 +202,23 @@ def delete_document(customer_id, document_id):
         )
 
 
+def delete_all_documents(customer_id):
+    """Supprime les justificatifs persistés et retourne leurs chemins de fichiers.
+
+    Le compte client et le projet immobilier sont volontairement conservés. Les
+    chemins sont renvoyés pour permettre à l'interface de supprimer ensuite les
+    fichiers physiques uniquement s'ils se trouvent dans ``data/uploads``.
+    """
+    with _connection() as connection:
+        rows = connection.execute(
+            "SELECT document_path FROM customer_documents WHERE customer_id = ?",
+            (customer_id,),
+        ).fetchall()
+        connection.execute(
+            "DELETE FROM customer_documents WHERE customer_id = ?",
+            (customer_id,),
+        )
+    return [row["document_path"] for row in rows if row["document_path"]]
+
+
 init_database()

@@ -1,6 +1,8 @@
 """Synthèse EB-105 : uniquement les cinq champs métier confirmés."""
 import csv
 import io
+import re
+from datetime import datetime
 
 import streamlit as st
 
@@ -14,6 +16,27 @@ BUSINESS_FIELDS = {
     "charge_mensuelle_credits": {"label": "Charges mensuelles de crédits", "type": "Nombre (MAD)", "document": "releve", "required": True},
     "revenus_complementaires": {"label": "Revenus complémentaires", "type": "Nombre (MAD)", "document": "releve", "required": False},
 }
+
+
+def _canonical_value(value, expected_type):
+    """Évite les faux conflits dus uniquement au format d'une même valeur."""
+    if value is None:
+        return None
+    if expected_type.startswith("Nombre"):
+        text = re.sub(r"\s+", "", str(value)).replace(",", ".")
+        try:
+            return ("number", round(float(text), 2))
+        except ValueError:
+            return ("text", text.casefold())
+    if expected_type == "Date":
+        text = str(value).strip()
+        for pattern in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+            try:
+                return ("date", datetime.strptime(text, pattern).date().isoformat())
+            except ValueError:
+                continue
+        return ("text", re.sub(r"\s+", " ", text).casefold())
+    return ("text", re.sub(r"\s+", " ", str(value)).strip().casefold())
 
 
 def _valid_confirmation(record, document_id):
@@ -40,7 +63,10 @@ def build_client_summary(documents):
             record = (document.get("confirmed_fields") or {}).get(field)
             if _valid_confirmation(record, document_id):
                 candidates.append((document_id, document, record))
-        unique = {repr(item[2]["value"]) for item in candidates}
+        unique = {
+            _canonical_value(item[2]["value"], spec["type"])
+            for item in candidates
+        }
         conflict = len(unique) > 1
         selected = max(candidates, key=lambda item: item[2]["confirmed_at"]) if candidates and not conflict else None
         if conflict:
