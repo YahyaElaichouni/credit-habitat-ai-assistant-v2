@@ -36,7 +36,9 @@ from database.customer_accounts import (
 )
 from extraction.schema import DOCUMENT_SCHEMAS
 from ui.document_review import render_declared_form, render_document_review
-from ui.client_summary import build_client_summary, render_client_summary
+from ui.client_summary import (
+    build_client_summary, render_client_summary, render_final_verification,
+)
 
 # =========================================================
 # CONFIGURATION
@@ -334,6 +336,15 @@ def current_client_documents():
     }
 
 
+def required_documents_ready(documents=None):
+    documents = documents if documents is not None else current_client_documents()
+    completed_types = {
+        document.get("type") for document in documents.values()
+        if document.get("status") == "completed"
+    }
+    return {"bulletin", "releve"}.issubset(completed_types)
+
+
 def _remove_uploaded_files(paths):
     """Supprime uniquement des fichiers situés dans le répertoire d'upload."""
     upload_root = Path("data/uploads").resolve()
@@ -360,6 +371,9 @@ def _clear_document_session(documents):
         if any(document_id in key_text for document_id in document_ids):
             st.session_state.pop(key, None)
         elif key_text.startswith(f"declared_{client_id}_"):
+            st.session_state.pop(key, None)
+        elif key_text.startswith((f"verification_table_{client_id}",
+                                  f"verification_checked_{client_id}")):
             st.session_state.pop(key, None)
     for key, default in (
         ("current_doc_id", None),
@@ -411,6 +425,57 @@ def reset_documents_dialog():
             "Vos anciens justificatifs et leurs informations ont été supprimés. "
             "Vous pouvez déposer les nouveaux documents."
         )
+        st.rerun()
+
+
+@st.dialog("Supprimer ce justificatif")
+def delete_one_document_dialog(document_id):
+    document = st.session_state.documents.get(document_id)
+    if not document or document.get("client_id") != st.session_state.current_client_id:
+        st.error("Ce justificatif n'est plus disponible.")
+        return
+    st.warning(
+        f"Le justificatif « {document.get('filename') or 'Document'} » et toutes les "
+        "informations confirmées depuis cette pièce seront supprimés."
+    )
+    confirmed = st.checkbox(
+        "Je confirme la suppression de ce justificatif",
+        key=f"confirm_delete_document_{document_id}",
+    )
+    if st.button(
+        "Supprimer définitivement",
+        icon=":material/delete:",
+        type="primary",
+        width="stretch",
+        disabled=not confirmed,
+        key=f"delete_document_confirm_{document_id}",
+    ):
+        try:
+            delete_document(st.session_state.current_client_id, document_id)
+        except Exception as exc:
+            st.error(f"Suppression impossible : {exc}")
+            return
+        failures = _remove_uploaded_files([document.get("document_path")])
+        for key in list(st.session_state):
+            if document_id in str(key):
+                st.session_state.pop(key, None)
+        st.session_state.documents.pop(document_id, None)
+        if st.session_state.get("current_doc_id") == document_id:
+            st.session_state.current_doc_id = None
+            st.session_state.last_result = None
+            st.session_state.confirmed_fields = {}
+        st.session_state.pop(f"verification_table_{st.session_state.current_client_id}", None)
+        st.session_state.pop(f"verification_checked_{st.session_state.current_client_id}", None)
+        audit.log_event(
+            "client_document_deleted",
+            advisor_id=f"client_portal_{st.session_state.session_id[:8]}",
+            session_id=st.session_state.session_id,
+            document_path=document.get("document_path"),
+            document_type=document.get("type"),
+            decision="confirme_par_client",
+            details={"fichier_non_supprime": failures},
+        )
+        st.session_state.documents_reset_notice = "Le justificatif a été supprimé."
         st.rerun()
 
 
@@ -534,7 +599,7 @@ def render_customer_journey():
     documents, _, dossier_complete, _ = dossier_readiness()
     account_ready = st.session_state.account_created
     has_documents = bool(documents)
-    has_result = st.session_state.last_result is not None
+    documents_ready = required_documents_ready(documents)
     current_page = st.session_state.page
 
     st.caption("VOTRE PARCOURS DE SIMULATION")
@@ -542,8 +607,8 @@ def render_customer_journey():
     definitions = [
         ("1. Mon espace", "Accueil", True, not account_ready, ":material/person:"),
         ("2. Mon offre", "Accueil", account_ready, account_ready and current_page == "Accueil", ":material/home:"),
-        ("3. Mes documents", "Extraction", account_ready, current_page == "Extraction" and not has_result, ":material/upload_file:"),
-        ("4. Vérification", "Extraction", has_documents, current_page == "Extraction" and has_result, ":material/fact_check:"),
+        ("3. Mes documents", "Extraction", account_ready, current_page == "Extraction", ":material/upload_file:"),
+        ("4. Vérification", "Verification", documents_ready, current_page == "Verification", ":material/fact_check:"),
         ("5. Ma simulation", "Simulation", dossier_complete, current_page == "Simulation", ":material/calculate:"),
     ]
     for column, (label, page, enabled, active, icon) in zip(steps, definitions):
@@ -559,7 +624,7 @@ def render_customer_journey():
                 args=(page,),
             )
 
-    completed = int(account_ready) + int(has_documents) + int(has_result) + int(dossier_complete)
+    completed = int(account_ready) + int(has_documents) + int(documents_ready) + int(dossier_complete)
     st.progress(completed / 4, text=f"Progression du dossier : {completed}/4 étapes terminées")
 
 
@@ -914,6 +979,18 @@ with st.sidebar:
         st.session_state.page = "Extraction"
         st.rerun()
 
+    client_documents = current_client_documents()
+    verification_ready = required_documents_ready(client_documents)
+    if st.button(
+        "Vérifier mes informations",
+        icon=":material/fact_check:",
+        width="stretch",
+        type="primary" if st.session_state.page == "Verification" else "secondary",
+        disabled=st.session_state.processing or not verification_ready,
+    ):
+        st.session_state.page = "Verification"
+        st.rerun()
+
     _, _, simulation_ready, _ = dossier_readiness()
     if st.button("Ma simulation", icon=":material/calculate:", width="stretch", type="primary" if st.session_state.page == "Simulation" else "secondary", disabled=st.session_state.processing or not simulation_ready):
         st.session_state.page = "Simulation"
@@ -1172,9 +1249,6 @@ elif st.session_state.page == "Extraction":
     }
     
     if client_docs:
-        render_client_summary(client_docs)
-        summary_rows, _ = build_client_summary(client_docs)
-        render_conflict_resolution(client_docs, summary_rows, advisor_id)
         st.subheader("Mes documents")
         
         # Afficher les documents dans une grille
@@ -1219,10 +1293,39 @@ elif st.session_state.page == "Extraction":
                     st.caption(f"Type: {doc_data.get('type', 'Inconnu')}")
                     if doc_data.get('timestamp'):
                         st.caption(f"📅 {doc_data.get('timestamp')[:16]}")
+                    if st.button(
+                        "Supprimer ce justificatif",
+                        icon=":material/delete:",
+                        key=f"delete_card_{doc_id}",
+                        width="stretch",
+                    ):
+                        delete_one_document_dialog(doc_id)
                 
                 st.write("")  # Espacement
 
-        with st.container(horizontal=True, horizontal_alignment="right"):
+        documents_ready = required_documents_ready(client_docs)
+        if not documents_ready:
+            completed_types = {
+                document.get("type") for document in client_docs.values()
+                if document.get("status") == "completed"
+            }
+            missing_documents = []
+            if "bulletin" not in completed_types:
+                missing_documents.append("un bulletin de paie")
+            if "releve" not in completed_types:
+                missing_documents.append("un relevé bancaire")
+            st.info("Ajoutez " + " et ".join(missing_documents) + " pour passer à la vérification.")
+
+        with st.container(horizontal=True, horizontal_alignment="distribute"):
+            if st.button(
+                "Vérifier mes 5 informations",
+                icon=":material/fact_check:",
+                type="primary",
+                disabled=not documents_ready,
+                key="open_final_verification",
+            ):
+                st.session_state.page = "Verification"
+                st.rerun()
             if st.button(
                 "Recommencer avec de nouveaux justificatifs",
                 icon=":material/delete_sweep:",
@@ -1542,21 +1645,21 @@ elif st.session_state.page == "Extraction":
                         current_doc,
                     )
 
-                    _, _, dossier_complete, missing_for_simulation = dossier_readiness()
-                    if not dossier_complete:
+                    documents_ready = required_documents_ready()
+                    if not documents_ready:
                         st.info(
-                            "La simulation sera accessible après vérification de : "
-                            + ", ".join(missing_for_simulation)
+                            "Ajoutez au minimum un bulletin de paie et un relevé bancaire "
+                            "avant de passer à la vérification finale."
                         )
                     if st.button(
-                        "Continuer vers ma simulation",
+                        "Continuer vers la vérification",
                         icon=":material/arrow_forward:",
                         type="primary",
                         width="stretch",
-                        disabled=not dossier_complete,
-                        key=f"continue_simulation_{st.session_state.current_doc_id}",
+                        disabled=not documents_ready,
+                        key=f"continue_verification_{st.session_state.current_doc_id}",
                     ):
-                        st.session_state.page = "Simulation"
+                        st.session_state.page = "Verification"
                         st.rerun()
                     
                     # Sections détaillées
@@ -1570,17 +1673,50 @@ elif st.session_state.page == "Extraction":
                         st.json(validation_result["discrepancies"])
                     
                     # Bouton pour supprimer le document
-                    if st.button("🗑️ Supprimer ce document", width="stretch"):
-                        if st.session_state.current_doc_id in st.session_state.documents:
-                            del st.session_state.documents[st.session_state.current_doc_id]
-                        delete_document(
-                            st.session_state.current_client_id,
-                            st.session_state.current_doc_id,
-                        )
-                        st.session_state.current_doc_id = None
-                        st.session_state.last_result = None
-                        st.session_state.confirmed_fields = {}
-                        st.rerun()
+                    if st.button(
+                        "Supprimer ce justificatif",
+                        icon=":material/delete:",
+                        width="stretch",
+                        key=f"delete_selected_{st.session_state.current_doc_id}",
+                    ):
+                        delete_one_document_dialog(st.session_state.current_doc_id)
+
+# =========================================================
+# PAGE VÉRIFICATION DES INFORMATIONS ESSENTIELLES
+# =========================================================
+
+elif st.session_state.page == "Verification":
+    if not st.session_state.account_created:
+        st.session_state.page = "Accueil"
+        st.rerun()
+    client_docs = current_client_documents()
+    if not required_documents_ready(client_docs):
+        st.title("Vérification indisponible")
+        st.warning("Ajoutez d'abord un bulletin de paie et un relevé bancaire analysés.")
+        if st.button(
+            "Retourner à mes documents",
+            icon=":material/upload_file:",
+            type="primary",
+            width="stretch",
+        ):
+            st.session_state.page = "Extraction"
+            st.rerun()
+        st.stop()
+
+    st.title("Vérifier mes informations")
+    st.caption(
+        "Corrigez si nécessaire les cinq informations utilisées pour calculer votre "
+        "simulation, puis confirmez-les en une seule fois."
+    )
+    render_final_verification(
+        client_docs,
+        st.session_state.current_client_id,
+        advisor_id,
+        st.session_state.session_id,
+    )
+    if st.button("Retourner à mes documents", icon=":material/arrow_back:"):
+        st.session_state.page = "Extraction"
+        st.rerun()
 
 # =========================================================
 # PAGE SIMULATION CLIENT
@@ -1597,8 +1733,8 @@ elif st.session_state.page == "Simulation":
             "Vérifiez d'abord les informations indispensables : "
             + ", ".join(missing_for_simulation or ["revenu, ancienneté et charges en cours"])
         )
-        if st.button("Retourner à mes documents", type="primary", width="stretch"):
-            st.session_state.page = "Extraction"
+        if st.button("Vérifier mes informations", type="primary", width="stretch"):
+            st.session_state.page = "Verification"
             st.rerun()
         st.stop()
     st.title("Ma simulation de crédit habitat")
@@ -1659,13 +1795,17 @@ elif st.session_state.page == "Simulation":
             row["field"]: row["Valeur confirmée"]
             for row in rows if row["Statut"] == "Confirmé"
         }
-        income = confirmed.get("salaire_net")
+        salary_income = confirmed.get("salaire_net")
+        additional_income = confirmed.get("revenus_complementaires")
         current_charges = confirmed.get("charge_mensuelle_credits")
-        if income not in (None, 0) and current_charges is not None:
-            projected_ratio = (float(current_charges) + monthly_payment) / float(income)
+        if salary_income is not None and additional_income is not None and current_charges is not None:
+            income = float(salary_income) + float(additional_income)
+            projected_ratio = ((float(current_charges) + monthly_payment) / income
+                               if income > 0 else 0.0)
             st.metric("Taux d'endettement projeté", f"{projected_ratio:.2%}", border=True)
             st.caption(
-                "Calcul indicatif : (charges de crédits actuelles + mensualité estimée) ÷ revenu mensuel net vérifié."
+                "Calcul indicatif : (charges actuelles + mensualité estimée) ÷ "
+                "(revenu net + revenus complémentaires vérifiés)."
             )
         else:
             st.info("Vérifiez votre bulletin de paie et votre relevé pour afficher le taux d'endettement projeté.")
