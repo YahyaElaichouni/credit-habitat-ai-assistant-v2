@@ -6,13 +6,28 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-CREDIT_WORDS = ("mensualite credit", "echeance credit", "echeance pret", "prelevement pret",
-                "credit immobilier", "credit habitat", "credit auto", "credit consommation")
+CREDIT_WORDS = (
+    "mensualite credit", "mensualite de credit", "mensualite pret",
+    "echeance credit", "echeance de credit", "echeance pret", "echeance de pret",
+    "prelevement credit", "prelevement de credit", "prelevement pret",
+    "reglement credit", "remboursement credit", "remboursement pret",
+    "credit immobilier", "credit habitat", "credit logement",
+    "credit auto", "credit consommation",
+)
 EXCLUDED_WORDS = ("assurance", "remboursement anticipe", "solde du pret")
-EXTRA_INCOME_WORDS = ("prime", "virement complementaire", "revenu complementaire",
-                      "allocation", "loyer recu", "pension", "vir-inst de",
-                      "virement recu de")
-EXTRA_INCOME_EXCLUDED = ("salaire", "remboursement", "annulation", "contrepassation")
+EXTRA_INCOME_WORDS = (
+    "prime", "virement complementaire", "revenu complementaire",
+    "allocation", "loyer recu", "pension", "vir-inst de",
+    "virement recu", "virement en votre faveur", "vir crediteur",
+)
+OCR_EXTRA_INCOME_WORDS = (
+    "vir-inst de", "virement recu", "virement en votre faveur",
+    "vir crediteur", "virement complementaire", "loyer recu",
+)
+EXTRA_INCOME_EXCLUDED = (
+    "salaire", "paie", "remboursement", "annulation", "contrepassation",
+    "solde initial", "ancien solde", "nouveau solde", "total mouvement",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +50,14 @@ def _norm(value):
 
 
 def _date(value):
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    spaced = re.fullmatch(r"(\d{1,2})\s+(\d{1,2})\s+(\d{2,4})", raw)
+    if spaced:
+        raw = "/".join(spaced.groups())
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y",
+                "%d/%m/%y", "%d-%m-%y", "%d.%m.%y"):
         try:
-            return datetime.strptime(str(value), fmt).date()
+            return datetime.strptime(raw, fmt).date()
         except ValueError:
             pass
     return None
@@ -57,17 +77,157 @@ def _amount(value):
     return None
 
 
+def _page_map(pages):
+    return {
+        item.get("page"): _norm(item.get("text"))
+        for item in pages or []
+        if type(item.get("page")) is int
+    }
+
+
+def _transaction_evidence(item, pages):
+    """Vérifie une transaction même si la citation du LLM est légèrement reformulée.
+
+    L'OCR des tableaux insère parfois des espaces ou des séparateurs différents.
+    On exige alors que la page contienne simultanément la date, le montant et au
+    moins deux mots significatifs du libellé. Cette vérification reste fondée sur
+    le document, sans faire confiance au drapeau produit par le modèle.
+    """
+    page = item.get("page")
+    page_map = _page_map(pages)
+    if type(page) is not int or page not in page_map:
+        return None
+    page_text = page_map[page]
+    quote = item.get("quote")
+    if isinstance(quote, str) and _norm(quote) and _norm(quote) in page_text:
+        return quote.strip()
+
+    day = _date(item.get("date"))
+    amount = _amount(item.get("montant"))
+    description = _norm(item.get("description"))
+    if day is None or amount is None or not description:
+        return None
+    date_forms = {
+        day.strftime("%d/%m/%Y"), day.strftime("%d-%m-%Y"),
+        day.strftime("%Y-%m-%d"), day.strftime("%d.%m.%Y"),
+    }
+    amount_forms = {
+        f"{abs(amount):.2f}", f"{abs(amount):.2f}".replace(".", ","),
+        f"{abs(amount):,.2f}".replace(",", " "),
+        f"{abs(amount):,.2f}".replace(",", " ").replace(".", ","),
+    }
+    tokens = [token for token in re.findall(r"[a-z]{3,}", description)
+              if token not in {"avec", "dans", "pour", "carte"}]
+    token_hits = sum(token in page_text for token in dict.fromkeys(tokens))
+    if (any(_norm(value) in page_text for value in date_forms)
+            and any(_norm(value) in page_text for value in amount_forms)
+            and token_hits >= min(2, len(set(tokens)))):
+        return str(quote or f"{item.get('date')} | {item.get('description')} | {item.get('montant')}").strip()
+    return None
+
+
+def _statement_activity_evidence(transactions, pages):
+    """Retourne une preuve qu'un tableau d'opérations a réellement été lu."""
+    for item in transactions or []:
+        if not isinstance(item, dict):
+            continue
+        quote = _transaction_evidence(item, pages)
+        if quote:
+            return item.get("page"), quote
+    for page_item in pages or []:
+        raw = str(page_item.get("text") or "")
+        match = re.search(
+            r"(?i)(date.{0,140}(?:libell[ée]|nature\s+op[ée]ration|r[ée]f[ée]rence)"
+            r".{0,140}d[ée]bit.{0,80}cr[ée]dit)",
+            raw,
+        )
+        if match and type(page_item.get("page")) is int:
+            return page_item["page"], " ".join(match.group(1).split())
+    return None
+
+
+def _zero_proposal(transactions, pages, document_path, document_sha256, method):
+    """Propose zéro seulement lorsqu'un tableau d'opérations est attesté.
+
+    Il s'agit d'une proposition à faible confiance : le client doit toujours la
+    confirmer. Une page illisible ou sans opérations continue donc à produire
+    ``None`` au lieu d'un faux zéro.
+    """
+    evidence = _statement_activity_evidence(transactions, pages)
+    if not evidence:
+        return None
+    page, quote = evidence
+    return {
+        "value": 0.0,
+        "confidence": 0.35,
+        "source": {
+            "document": Path(document_path).name if document_path else None,
+            "sha256": document_sha256,
+            "page": page,
+            "quote": quote,
+            "verified": True,
+            "evidence": [],
+            "method": method,
+            "absence_based": True,
+        },
+    }
+
+
+def _ocr_keyword_transactions(pages, keywords, transaction_type):
+    """Relit les lignes OCR aplaties quand le LLM omet le tableau.
+
+    Les relevés marocains rencontrés placent parfois la date valeur avant le
+    libellé et parfois après. Le motif accepte les deux organisations tout en
+    exigeant une date, un mot-clé métier et un montant décimal sur la même
+    ligne logique délimitée par ``|``.
+    """
+    date_pattern = r"\d{1,2}(?:\s*[./-]\s*|\s+)\d{1,2}(?:\s*[./-]\s*|\s+)\d{2,4}"
+    keyword_pattern = "|".join(re.escape(_norm(word)) for word in keywords)
+    amount_pattern = r"(\d{1,3}(?:[ .]\d{3})*|\d+)[,.](\d{2})"
+    pattern = re.compile(
+        rf"(?P<date>{date_pattern})\s*\|\s*"
+        rf"(?:{date_pattern}\s*\|\s*)?"
+        rf"(?:[^|]{{1,35}}\|\s*){{0,2}}"
+        rf"(?P<description>[^|]{{0,120}}?(?:{keyword_pattern})[^|]{{0,120}}?)\s*\|\s*"
+        rf"(?:{date_pattern}\s*\|\s*)?"
+        rf"(?P<amount>{amount_pattern})",
+        re.I,
+    )
+    found = []
+    for page_item in pages or []:
+        page_number = page_item.get("page")
+        if type(page_number) is not int:
+            continue
+        page_text = _norm(" ".join(str(page_item.get("text") or "").split()))
+        for match in pattern.finditer(page_text):
+            day = _date(match.group("date"))
+            amount = _amount(match.group("amount"))
+            if day is None or amount is None or amount <= 0:
+                continue
+            found.append({
+                "date": match.group("date"),
+                "description": match.group("description").strip(),
+                "montant": amount,
+                "type": transaction_type,
+                "page": page_number,
+                "quote": match.group(0).strip(),
+                "month": day.strftime("%Y-%m"),
+            })
+    return found
+
+
 def derive_monthly_credit_charge(transactions, pages, document_path, document_sha256):
     """Médiane des totaux mensuels prouvés ; aucun résultat sans preuve OCR."""
-    page_map = {p["page"]: _norm(p["text"]) for p in pages}
     eligible = []
     for item in transactions or []:
+        if not isinstance(item, dict):
+            continue
         description = _norm(item.get("description"))
         amount, day = _amount(item.get("montant")), _date(item.get("date"))
         transaction_type = _norm(item.get("type"))
-        page, quote = item.get("page"), item.get("quote")
-        verified = (type(page) is int and page in page_map and isinstance(quote, str)
-                    and _norm(quote) and _norm(quote) in page_map[page])
+        page = item.get("page")
+        quote = _transaction_evidence(item, pages)
+        verified = quote is not None
         credit_label = any(word in description for word in CREDIT_WORDS)
         # Certains modèles renvoient "débit", "DEBIT", "D" ou un montant négatif.
         # Le libellé explicite de mensualité reste obligatoire pour éviter les faux positifs.
@@ -77,7 +237,8 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
         if (is_debit and day and amount is not None and amount != 0
                 and credit_label
                 and not any(word in description for word in EXCLUDED_WORDS) and verified):
-            eligible.append({**item, "montant": abs(amount), "month": day.strftime("%Y-%m")})
+            eligible.append({**item, "montant": abs(amount), "quote": quote,
+                             "month": day.strftime("%Y-%m")})
         elif credit_label:
             logger.warning(
                 "Échéance de crédit ignorée: type=%r, montant=%r, date=%r, page=%r, preuve_verifiee=%s",
@@ -87,38 +248,20 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
     # débit/crédit. Une ligne OCR portant un libellé explicite d'échéance suffit
     # à proposer le montant qui suit immédiatement ce libellé.
     if not eligible:
-        for page_item in pages:
-            page_number = page_item.get("page")
-            for raw_line in str(page_item.get("text") or "").splitlines():
-                line = _norm(raw_line)
-                matched_word = next((word for word in CREDIT_WORDS if word in line), None)
-                if not matched_word or any(word in line for word in EXCLUDED_WORDS):
-                    continue
-                tail = line.split(matched_word, 1)[1]
-                amount_match = re.search(r"(?<!\d)(\d{1,3}(?:[ .]\d{3})+|\d+)(?:[,.](\d{1,2}))?", tail)
-                date_match = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})\b", line)
-                if not amount_match or not date_match or type(page_number) is not int:
-                    continue
-                amount_text = amount_match.group(1).replace(" ", "")
-                if amount_match.group(2):
-                    amount_text += "." + amount_match.group(2)
-                amount = _amount(amount_text)
-                day = _date(date_match.group(1))
-                if amount is None or amount <= 0 or day is None:
-                    continue
-                eligible.append({
-                    "date": date_match.group(1), "description": matched_word,
-                    "montant": amount, "type": "debit", "page": page_number,
-                    "quote": raw_line.strip(), "month": day.strftime("%Y-%m"),
-                })
-                logger.info(
-                    "Échéance de crédit reconnue directement dans l'OCR: page=%s, montant=%.2f",
-                    page_number, amount,
-                )
+        eligible = [
+            item for item in _ocr_keyword_transactions(pages, CREDIT_WORDS, "debit")
+            if not any(word in _norm(item["description"]) for word in EXCLUDED_WORDS)
+        ]
+        for item in eligible:
+            logger.info(
+                "Échéance de crédit reconnue directement dans l'OCR: page=%s, montant=%.2f",
+                item["page"], item["montant"],
+            )
     if not eligible:
-        # L'absence d'une ligne identifiable ne prouve jamais une charge nulle.
-        # Le client doit renseigner 0 lui-même s'il confirme ne pas avoir de crédit.
-        return None
+        return _zero_proposal(
+            transactions, pages, document_path, document_sha256,
+            "aucune échéance de crédit explicite détectée dans les opérations du relevé",
+        )
     monthly = {}
     for item in eligible:
         monthly[item["month"]] = monthly.get(item["month"], 0.0) + float(item["montant"])
@@ -142,50 +285,43 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
 
 
 def derive_complementary_income(transactions, pages, document_path, document_sha256):
-    """Somme mensuelle des crédits complémentaires prouvés, salaire exclu.
+    """Propose le total mensuel des crédits complémentaires, salaire exclu.
 
-    Au moins deux mois concordants sont nécessaires. Un virement reçu isolé
-    ne constitue pas une preuve de revenu complémentaire régulier.
+    Un seul mois produit une proposition à faible confiance ; deux mois
+    concordants augmentent la confiance. La confirmation du client reste
+    obligatoire dans les deux cas.
     """
-    page_map = {p["page"]: _norm(p["text"]) for p in pages}
     eligible = []
     for item in transactions or []:
+        if not isinstance(item, dict):
+            continue
         description = _norm(item.get("description"))
-        amount, day = item.get("montant"), _date(item.get("date"))
-        page, quote = item.get("page"), item.get("quote")
-        verified = (type(page) is int and page in page_map and isinstance(quote, str)
-                    and _norm(quote) and _norm(quote) in page_map[page])
-        if (item.get("type") == "credit" and day and isinstance(amount, (int, float)) and amount > 0
+        amount, day = _amount(item.get("montant")), _date(item.get("date"))
+        transaction_type = _norm(item.get("type"))
+        page = item.get("page")
+        quote = _transaction_evidence(item, pages)
+        verified = quote is not None
+        incoming_label = any(word in description for word in EXTRA_INCOME_WORDS)
+        is_credit = transaction_type in {"credit", "c", "cr"} or (
+            transaction_type == "" and incoming_label
+        )
+        if (is_credit and day and amount is not None and amount > 0
                 and any(word in description for word in EXTRA_INCOME_WORDS)
                 and not any(word in description for word in EXTRA_INCOME_EXCLUDED) and verified):
-            eligible.append({**item, "month": day.strftime("%Y-%m")})
+            eligible.append({**item, "montant": amount, "quote": quote,
+                             "month": day.strftime("%Y-%m")})
     # Secours sur le texte tabulaire lorsque le le LLM oublie certaines
     # transactions. « VIR-INST DE » désigne ici un virement entrant explicite.
     if not eligible:
-        pattern = re.compile(
-            r"(\d{2}[/-]\d{2}[/-]\d{4})\s*\|\s*"
-            r"(VIR-INST\s+DE\s+[^|]{3,80}?)\s*\|\s*"
-            r"(?:\d{2}[/-]\d{2}[/-]\d{4})\s*\|\s*"
-            r"(\d{1,3}(?:[ .]\d{3})*|\d+)[,.](\d{2})",
-            re.I,
-        )
-        for page_item in pages:
-            page_number = page_item.get("page")
-            page_text = " ".join(str(page_item.get("text") or "").split())
-            if type(page_number) is not int:
-                continue
-            for match in pattern.finditer(page_text):
-                day = _date(match.group(1))
-                amount = _amount(f"{match.group(3)},{match.group(4)}")
-                if day is None or amount is None or amount <= 0:
-                    continue
-                eligible.append({
-                    "date": match.group(1), "description": match.group(2).strip(),
-                    "montant": amount, "type": "credit", "page": page_number,
-                    "quote": match.group(0), "month": day.strftime("%Y-%m"),
-                })
+        eligible = [
+            item for item in _ocr_keyword_transactions(pages, OCR_EXTRA_INCOME_WORDS, "credit")
+            if not any(word in _norm(item["description"]) for word in EXTRA_INCOME_EXCLUDED)
+        ]
     if not eligible:
-        return None
+        return _zero_proposal(
+            transactions, pages, document_path, document_sha256,
+            "aucun revenu complémentaire explicite détecté dans les crédits du relevé",
+        )
     monthly = {}
     for item in eligible:
         monthly[item["month"]] = monthly.get(item["month"], 0.0) + float(item["montant"])

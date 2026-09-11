@@ -89,6 +89,12 @@ def inject_app_styles():
         [data-testid="stSidebar"] {
             background: linear-gradient(180deg, #073b2c 0%, #0a4b38 55%, #062f24 100%);
             border-right: 0;
+            min-width: 330px;
+            max-width: 330px;
+            box-shadow: 14px 0 42px rgba(4, 45, 33, .14);
+        }
+        [data-testid="stSidebar"] > div:first-child {
+            padding: 1.35rem 1.15rem 1.25rem;
         }
         [data-testid="stSidebar"] * {
             color: #f4fbf7;
@@ -104,11 +110,13 @@ def inject_app_styles():
             border-color: rgba(255,255,255,.15);
         }
         [data-testid="stSidebar"] .stButton > button {
-            min-height: 2.75rem;
-            border-radius: .85rem;
+            min-height: 3.15rem;
+            border-radius: .9rem;
             border: 1px solid rgba(255,255,255,.16);
             background: rgba(255,255,255,.06);
             justify-content: flex-start;
+            padding-inline: 1rem;
+            font-weight: 650;
             transition: transform .16s ease, background .16s ease, border-color .16s ease;
         }
         [data-testid="stSidebar"] .stButton > button:hover {
@@ -123,6 +131,56 @@ def inject_app_styles():
         [data-testid="stSidebar"] .stButton > button[kind="primary"] * {
             color: #073b2c !important;
             font-weight: 700;
+        }
+        .st-key-sidebar_brand {
+            padding-bottom: .7rem;
+            border-bottom: 1px solid rgba(255,255,255,.16);
+        }
+        .st-key-sidebar_brand [data-testid="stImage"] img {
+            border-radius: .6rem;
+            background: #ffffff;
+            padding: .22rem;
+        }
+        .st-key-sidebar_intro {
+            padding: 1rem .15rem .35rem;
+        }
+        .st-key-sidebar_intro h2 {
+            margin-bottom: .15rem;
+            color: #ffffff;
+        }
+        .st-key-sidebar_intro p {
+            color: rgba(244,251,247,.72) !important;
+        }
+        .st-key-sidebar_progress {
+            margin: .5rem 0 1.15rem;
+            padding: 1rem;
+            border: 1px solid rgba(255,255,255,.13);
+            border-radius: 1rem;
+            background: rgba(255,255,255,.06);
+        }
+        .st-key-sidebar_progress [data-testid="stProgress"] > div > div {
+            background: linear-gradient(90deg, #34d17f, #67e49e);
+        }
+        .st-key-sidebar_nav {
+            padding-top: .15rem;
+        }
+        .st-key-sidebar_nav [data-testid="stColumn"]:last-child {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+        }
+        .st-key-sidebar_support {
+            margin-top: 1.25rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255,255,255,.16);
+        }
+        .st-key-sidebar_profile {
+            margin-top: .8rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255,255,255,.16);
+        }
+        .st-key-sidebar_profile p {
+            margin-bottom: .15rem;
         }
         .block-container {
             max-width: 1180px;
@@ -193,6 +251,10 @@ def inject_app_styles():
             min-height: 3.2rem;
         }
         @media (max-width: 700px) {
+            [data-testid="stSidebar"] {
+                min-width: min(330px, 88vw);
+                max-width: min(330px, 88vw);
+            }
             .st-key-assistant_dock {
                 right: .65rem;
                 left: .65rem;
@@ -304,9 +366,6 @@ def inject_app_styles():
 
 def render_header():
     """Afficher l'identité institutionnelle."""
-    logo = Path("assets/logo_ca.jpg")
-    if logo.is_file():
-        st.logo(str(logo), size="large")
     st.caption("CRÉDIT AGRICOLE DU MAROC  ·  MON PROJET HABITAT")
 
 
@@ -594,38 +653,173 @@ def dossier_readiness():
     return documents, rows, business_complete and not missing, missing
 
 
-def render_customer_journey():
-    """Parcours permanent : le client sait toujours où il se trouve."""
-    documents, _, dossier_complete, _ = dossier_readiness()
-    account_ready = st.session_state.account_created
-    has_documents = bool(documents)
-    documents_ready = required_documents_ready(documents)
-    current_page = st.session_state.page
+def render_application_sidebar():
+    """Navigation client inspirée d'un espace bancaire, avec états réels du dossier."""
+    account_ready = bool(st.session_state.account_created)
+    documents = current_client_documents() if account_ready else {}
+    completed_types = {
+        document.get("type") for document in documents.values()
+        if document.get("status") == "completed"
+    }
+    missing_document_count = len({"bulletin", "releve"} - completed_types)
+    documents_ready = missing_document_count == 0
 
-    st.caption("VOTRE PARCOURS DE SIMULATION")
-    steps = st.columns(5, gap="small")
-    definitions = [
-        ("1. Mon espace", "Accueil", True, not account_ready, ":material/person:"),
-        ("2. Mon offre", "Accueil", account_ready, account_ready and current_page == "Accueil", ":material/home:"),
-        ("3. Mes documents", "Extraction", account_ready, current_page == "Extraction", ":material/upload_file:"),
-        ("4. Vérification", "Verification", documents_ready, current_page == "Verification", ":material/fact_check:"),
-        ("5. Ma simulation", "Simulation", dossier_complete, current_page == "Simulation", ":material/calculate:"),
-    ]
-    for column, (label, page, enabled, active, icon) in zip(steps, definitions):
-        with column:
-            st.button(
-                label,
-                icon=icon,
-                type="primary" if active else "secondary",
-                disabled=st.session_state.processing or not enabled,
+    saved_project = {}
+    if account_ready:
+        try:
+            saved_project = load_project(st.session_state.current_client_id) or {}
+        except Exception:
+            saved_project = {}
+    project_ready = bool(saved_project)
+
+    dossier_complete = False
+    if account_ready:
+        _, _, dossier_complete, _ = dossier_readiness()
+    simulation_seen = dossier_complete and st.session_state.page == "Simulation"
+    completed_steps = sum((
+        account_ready,
+        project_ready,
+        documents_ready,
+        dossier_complete,
+        simulation_seen,
+    ))
+
+    logo = Path("assets/logo_ca.jpg")
+    with st.container(key="sidebar_brand"):
+        logo_column, title_column = st.columns([1, 2.8], vertical_alignment="center")
+        with logo_column:
+            if logo.is_file():
+                st.image(str(logo), width=58)
+            else:
+                st.markdown(":material/account_balance:")
+        with title_column:
+            st.markdown("**Crédit Agricole  \\\ndu Maroc**")
+
+    with st.container(key="sidebar_intro"):
+        st.markdown("## Crédit Habitat")
+        st.caption("Votre demande de financement")
+
+    with st.container(key="sidebar_progress"):
+        progress_header, progress_value = st.columns([2.5, 1], vertical_alignment="center")
+        progress_header.markdown("**Avancement du dossier**")
+        progress_value.markdown(f"### {completed_steps * 20} %")
+        st.progress(completed_steps / 5)
+        st.caption(f"{completed_steps} étape{'s' if completed_steps != 1 else ''} sur 5 complétée{'s' if completed_steps != 1 else ''}")
+
+    st.caption("MON DOSSIER")
+    with st.container(key="sidebar_nav"):
+        if st.button(
+            "Vue d’ensemble",
+            icon=":material/home:",
+            width="stretch",
+            type="primary" if st.session_state.page == "Accueil" else "secondary",
+            disabled=st.session_state.processing,
+            key="sidebar_overview",
+        ):
+            _go_to("Accueil")
+            st.rerun()
+
+        info_column, info_status = st.columns([3.3, 1], vertical_alignment="center")
+        with info_column:
+            if st.button(
+                "Mes informations",
+                icon=":material/person:",
                 width="stretch",
-                key=f"journey_{label}",
-                on_click=_go_to,
-                args=(page,),
-            )
+                disabled=st.session_state.processing or not account_ready,
+                key="sidebar_information",
+            ):
+                _go_to("Accueil")
+                st.rerun()
+        with info_status:
+            st.badge("OK" if project_ready else "À faire", color="green" if project_ready else "orange")
 
-    completed = int(account_ready) + int(has_documents) + int(documents_ready) + int(dossier_complete)
-    st.progress(completed / 4, text=f"Progression du dossier : {completed}/4 étapes terminées")
+        document_column, document_status = st.columns([3.3, 1.35], vertical_alignment="center")
+        with document_column:
+            if st.button(
+                "Mes documents",
+                icon=":material/description:",
+                width="stretch",
+                type="primary" if st.session_state.page == "Extraction" else "secondary",
+                disabled=st.session_state.processing or not account_ready,
+                key="sidebar_documents",
+            ):
+                _go_to("Extraction")
+                st.rerun()
+        with document_status:
+            if missing_document_count:
+                st.badge(f"{missing_document_count} manq.", color="red")
+            else:
+                st.badge("OK", color="green")
+
+        verify_column, verify_status = st.columns([3.3, 1], vertical_alignment="center")
+        with verify_column:
+            if st.button(
+                "Vérification",
+                icon=":material/fact_check:",
+                width="stretch",
+                type="primary" if st.session_state.page == "Verification" else "secondary",
+                disabled=st.session_state.processing or not documents_ready,
+                key="sidebar_verification",
+            ):
+                _go_to("Verification")
+                st.rerun()
+        with verify_status:
+            st.badge("OK" if dossier_complete else "Bloqué", color="green" if dossier_complete else "gray")
+
+        simulation_column, simulation_status = st.columns([3.3, 1], vertical_alignment="center")
+        with simulation_column:
+            if st.button(
+                "Ma simulation",
+                icon=":material/calculate:",
+                width="stretch",
+                type="primary" if st.session_state.page == "Simulation" else "secondary",
+                disabled=st.session_state.processing or not dossier_complete,
+                key="sidebar_simulation",
+            ):
+                _go_to("Simulation")
+                st.rerun()
+        with simulation_status:
+            st.badge("Prête" if dossier_complete else "Bloquée", color="green" if dossier_complete else "gray")
+
+    with st.container(key="sidebar_support"):
+        if st.button(
+            "Besoin d’aide ?",
+            icon=":material/help:",
+            width="stretch",
+            key="sidebar_help",
+        ):
+            st.session_state.assistant_open = True
+            st.rerun()
+        with st.expander("Confidentialité", icon=":material/shield:"):
+            st.caption("Vos justificatifs servent uniquement à préparer votre simulation.")
+            st.caption("Vous gardez le contrôle sur les informations enregistrées.")
+
+    if account_ready:
+        profile = st.session_state.customer_profile
+        display_name = " ".join(filter(None, (profile.get("prenom"), profile.get("nom")))).strip()
+        initials = "".join(part[:1].upper() for part in display_name.split()[:2]) or "CL"
+        with st.container(key="sidebar_profile"):
+            identity_column, logout_column = st.columns([3.2, 1], vertical_alignment="center")
+            with identity_column:
+                st.markdown(f"**{initials} · {display_name or 'Mon compte'}**")
+                st.caption(profile.get("email", ""))
+            with logout_column:
+                logout = st.button(
+                    "Quitter",
+                    icon=":material/logout:",
+                    help="Se déconnecter",
+                    key="sidebar_logout",
+                )
+            if logout:
+                for key in (
+                    "documents", "current_doc_id", "confirmed_fields", "last_result",
+                    "chat_history", "customer_profile",
+                ):
+                    st.session_state.pop(key, None)
+                st.session_state.account_created = False
+                st.session_state.current_client_id = None
+                st.session_state.page = "Accueil"
+                st.rerun()
 
 
 def render_assistant_dock(advisor_id):
@@ -960,59 +1154,9 @@ if st.session_state.page == "Assistant":
 inject_app_styles()
 
 with st.sidebar:
-    st.markdown("## Crédit Habitat")
-    if st.session_state.account_created:
-        st.caption(f"Bonjour {st.session_state.customer_profile.get('prenom', '')}")
-    else:
-        st.caption("Créez votre espace pour commencer")
-    st.divider()
-
     # Identifiant conservé uniquement pour l'audit interne.
     advisor_id = f"client_portal_{st.session_state.session_id[:8]}"
-    st.markdown("**Accès rapide**")
-    
-    if st.button("Mon projet", icon=":material/home:", width="stretch", type="primary" if st.session_state.page == "Accueil" else "secondary", disabled=st.session_state.processing):
-        st.session_state.page = "Accueil"
-        st.rerun()
-    
-    if st.button("Mes documents", icon=":material/description:", width="stretch", type="primary" if st.session_state.page == "Extraction" else "secondary", disabled=st.session_state.processing or not st.session_state.account_created):
-        st.session_state.page = "Extraction"
-        st.rerun()
-
-    client_documents = current_client_documents()
-    verification_ready = required_documents_ready(client_documents)
-    if st.button(
-        "Vérifier mes informations",
-        icon=":material/fact_check:",
-        width="stretch",
-        type="primary" if st.session_state.page == "Verification" else "secondary",
-        disabled=st.session_state.processing or not verification_ready,
-    ):
-        st.session_state.page = "Verification"
-        st.rerun()
-
-    _, _, simulation_ready, _ = dossier_readiness()
-    if st.button("Ma simulation", icon=":material/calculate:", width="stretch", type="primary" if st.session_state.page == "Simulation" else "secondary", disabled=st.session_state.processing or not simulation_ready):
-        st.session_state.page = "Simulation"
-        st.rerun()
-    
-    with st.expander("Confidentialité", icon=":material/lock:"):
-        st.caption("Vos justificatifs servent uniquement à préparer cette simulation.")
-        st.caption("Vous gardez le contrôle : chaque information doit être vérifiée avant utilisation.")
-
-    if st.session_state.account_created:
-        st.markdown("**Mon compte**")
-        st.caption(st.session_state.customer_profile.get("email", ""))
-        if st.button("Se déconnecter", icon=":material/logout:", width="stretch"):
-            for key in (
-                "documents", "current_doc_id", "confirmed_fields", "last_result",
-                "chat_history", "customer_profile",
-            ):
-                st.session_state.pop(key, None)
-            st.session_state.account_created = False
-            st.session_state.current_client_id = None
-            st.session_state.page = "Accueil"
-            st.rerun()
+    render_application_sidebar()
 
 # L'assistant public est rendu avant le contenu protégé. Il reste donc
 # accessible sur la page de connexion et avant la création d'un compte.
@@ -1029,7 +1173,6 @@ render_assistant_dock(advisor_id)
 # =========================================================
 
 render_header()
-render_customer_journey()
 
 # =========================================================
 # PAGE ACCUEIL

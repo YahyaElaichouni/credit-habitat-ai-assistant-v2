@@ -104,30 +104,41 @@ class ExtractionAgent:
         sources = verify_sources(
             extraction_result["raw"], pages or [], document_path, document_sha256
         )
-        if document_type == "releve" and extraction_result["data"].get("charge_mensuelle_credits") is None:
-            derived = derive_monthly_credit_charge(
-                extraction_result["data"].get("transactions"), pages or [],
-                document_path, document_sha256,
-            )
-            if derived:
-                extraction_result["data"]["charge_mensuelle_credits"] = derived["value"]
-                extraction_result["confidences"]["charge_mensuelle_credits"] = derived["confidence"]
-                extraction_result["raw"]["charge_mensuelle_credits"] = {
-                    "value": derived["value"], "confidence": derived["confidence"], "source": None,
+        if document_type == "releve":
+            # Ces deux champs ne viennent jamais directement du LLM : le prompt
+            # lui demande de les laisser à null. On les recalcule donc toujours,
+            # même si le modèle a renvoyé par erreur 0 ou une valeur sans preuve.
+            # Cela évite que ValidationAgent rejette ensuite une valeur LLM non
+            # sourcée et affiche un champ vide au client.
+            transactions = extraction_result["data"].get("transactions")
+            derived_metrics = {
+                "charge_mensuelle_credits": derive_monthly_credit_charge(
+                    transactions, pages or [], document_path, document_sha256,
+                ),
+                "revenus_complementaires": derive_complementary_income(
+                    transactions, pages or [], document_path, document_sha256,
+                ),
+            }
+            for field_name, derived in derived_metrics.items():
+                if not derived:
+                    extraction_result["data"][field_name] = None
+                    extraction_result["confidences"][field_name] = None
+                    extraction_result["raw"][field_name] = {
+                        "value": None, "confidence": None, "source": None,
+                    }
+                    sources[field_name] = {
+                        "document": None, "sha256": document_sha256,
+                        "page": None, "quote": None, "verified": False,
+                    }
+                    continue
+                extraction_result["data"][field_name] = derived["value"]
+                extraction_result["confidences"][field_name] = derived["confidence"]
+                extraction_result["raw"][field_name] = {
+                    "value": derived["value"],
+                    "confidence": derived["confidence"],
+                    "source": None,
                 }
-                sources["charge_mensuelle_credits"] = derived["source"]
-        if document_type == "releve" and extraction_result["data"].get("revenus_complementaires") is None:
-            derived = derive_complementary_income(
-                extraction_result["data"].get("transactions"), pages or [],
-                document_path, document_sha256,
-            )
-            if derived:
-                extraction_result["data"]["revenus_complementaires"] = derived["value"]
-                extraction_result["confidences"]["revenus_complementaires"] = derived["confidence"]
-                extraction_result["raw"]["revenus_complementaires"] = {
-                    "value": derived["value"], "confidence": derived["confidence"], "source": None,
-                }
-                sources["revenus_complementaires"] = derived["source"]
+                sources[field_name] = derived["source"]
 
         logger.info("[ExtractionAgent] Extraction terminée.")
 
