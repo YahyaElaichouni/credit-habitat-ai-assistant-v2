@@ -112,7 +112,7 @@ def _text_value(value):
 
 
 def render_document_review(result, document_type, document_id, advisor_id, session_id, confirmations):
-    """Correction compacte : un tableau modifiable et une confirmation globale."""
+    """Afficher le tableau modifiable et retourner si les champs requis sont confirmés."""
     fields = result["validation_result"]["fields"]
     st.caption(
         "Modifiez directement la colonne « Valeur ». Les informations techniques "
@@ -276,6 +276,10 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
             "Informations obligatoires à vérifier : "
             + ", ".join(LABELS.get(name, name.replace("_", " ").capitalize()) for name in missing)
         )
+    else:
+        st.success(
+            "Les informations obligatoires sont enregistrées. Vous pouvez continuer."
+        )
 
     try:
         csv_data = export_confirmed_csv(result, document_type, confirmations, document_id)
@@ -291,3 +295,4 @@ def render_document_review(result, document_type, document_id, advisor_id, sessi
         key=f"export_{document_id}",
         on_click="ignore",
     )
+    return not missing

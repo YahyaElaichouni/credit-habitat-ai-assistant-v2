@@ -169,8 +169,9 @@ Texte OCR :
 # =========================================================
 
 BULLETIN_PROMPT = """
-Le document est un bulletin de paie marocain. Le texte peut provenir d'un
-tableau : le séparateur " | " représente des cellules de la même ligne.
+Le document est un bulletin de paie marocain ou étranger. Le texte peut
+provenir d'un tableau : le séparateur " | " représente des cellules de la
+même ligne.
 
 Extrais chacun des champs suivants au format
 {{"value": ..., "confidence": ..., "source": ...}} :
@@ -183,7 +184,8 @@ REGLES POUR LES BULLETINS MAROCAINS
 ASSOCIATION DES LIBELLES (variantes possibles)
 
 - nom/prenom : "Employé", "Salarié", "Nom et prénom", "Nom complet",
-  "Collaborateur". Si une ligne contient matricule + identité, retire le
+  "Collaborateur", ou identité précédée de "Madame", "Monsieur", "Mme",
+  "Mlle". Si une ligne contient matricule + identité, retire le
   matricule avant d'attribuer le nom. Ne prends jamais le signataire du
   bulletin, le directeur RH ou le responsable du capital humain.
 - employeur : "Société", "Entreprise", "Employeur", "Raison sociale",
@@ -211,21 +213,26 @@ ASSOCIATION DES LIBELLES (variantes possibles)
   "Base imposable", "Cumul brut imposable" uniquement si aucun total du
   mois n'est demandé ; privilégie toujours la ligne de la période courante.
 - total_retenues : "Total retenues", "Total des retenues",
-  "Total cotisations", "Retenues salariales". Ne prends pas une retenue
+  "Total cotisations", "Total des cotisations et contributions",
+  "Retenues salariales". Ne prends pas une retenue
   individuelle (IR, CNSS, AMO, CIMR, mutuelle, avance ou prêt). Si le tableau
   sépare "Part salariale" et "Part patronale", total_retenues désigne seulement
   le total salarial retenu au salarié ; ignore la part patronale.
 - salaire_net : "Salaire net", "Net à payer", "Net payé", "Net du mois",
   "Net imposable" SEULEMENT si le document l'utilise explicitement comme
   montant final ; sinon net imposable et net à payer sont différents.
-- devise : "MAD", "DH", "DHS", "Dirham", "Dirhams marocains".
+- devise : "MAD", "DH", "DHS", "Dirham", "Dirhams marocains", "EUR",
+  "euro" ou "euros". Ne retourne jamais MAD pour un montant explicitement
+  libellé en euros.
 
 METHODE D'EXTRACTION
 
 A. Cherche d'abord le libellé, puis la valeur dans la même cellule, la cellule
    immédiatement à droite ou la ligne immédiatement en dessous.
 B. Pour une ligne de tableau, respecte les colonnes Libellé/Base/Taux/Gain/
-   Retenue. Un nombre de la colonne Taux ou Base n'est pas le montant Gain.
+   Retenue ou Libellé/Base/Taux/A déduire/A payer. Un nombre d'heures dans
+   Base (par exemple 151,67) ou un taux horaire n'est pas salaire_base :
+   salaire_base est le montant de la dernière cellule « A payer » de la ligne.
 C. La zone "Cumuls" ou "Année" contient des agrégats historiques : ne les
    utilise pas à la place du montant de la période courante. Dans un tableau
    Période/Année, sélectionne exclusivement la ligne Période.

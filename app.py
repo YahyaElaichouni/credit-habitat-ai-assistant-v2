@@ -692,13 +692,211 @@ def current_client_documents():
     }
 
 
-def required_documents_ready(documents=None):
+DOCUMENT_JOURNEY = (
+    {
+        "type": "carte_identite",
+        "title": "Carte d'identité",
+        "instruction": "Ajoutez le recto et le verso de votre carte d'identité.",
+        "optional": False,
+    },
+    {
+        "type": "bulletin",
+        "title": "Bulletin de paie",
+        "instruction": "Ajoutez votre bulletin de paie le plus récent.",
+        "optional": False,
+    },
+    {
+        "type": "releve",
+        "title": "Relevé bancaire",
+        "instruction": "Ajoutez un relevé bancaire récent et lisible.",
+        "optional": False,
+    },
+    {
+        "type": "compromis",
+        "title": "Compromis de vente",
+        "instruction": "Ajoutez votre compromis si vous l'avez déjà signé.",
+        "optional": True,
+    },
+)
+
+
+def completed_document_types(documents=None):
+    """Retourner les types dont l'analyse est terminée pour le client connecté."""
     documents = documents if documents is not None else current_client_documents()
-    completed_types = {
-        document.get("type") for document in documents.values()
+    return {
+        document.get("type")
+        for document in documents.values()
         if document.get("status") == "completed"
     }
-    return {"bulletin", "releve"}.issubset(completed_types)
+
+
+def reviewed_document_types(documents=None):
+    """Retourner les types explicitement validés par l'utilisateur."""
+    documents = documents if documents is not None else current_client_documents()
+    return {
+        document.get("type")
+        for document in documents.values()
+        if document.get("status") == "completed"
+        and document.get("journey_reviewed") is True
+    }
+
+
+def required_documents_ready(documents=None):
+    documents = documents if documents is not None else current_client_documents()
+    required_types = {"carte_identite", "bulletin", "releve"}
+    return (
+        required_types.issubset(completed_document_types(documents))
+        and required_types.issubset(reviewed_document_types(documents))
+    )
+
+
+def credit_journey_step(documents=None):
+    """Déterminer automatiquement la prochaine étape du parcours de crédit."""
+    documents = documents if documents is not None else current_client_documents()
+    completed_types = completed_document_types(documents)
+    reviewed_types = reviewed_document_types(documents)
+
+    for index, document_step in enumerate(DOCUMENT_JOURNEY[:3]):
+        document_type = document_step["type"]
+        if document_type not in completed_types or document_type not in reviewed_types:
+            return index
+
+    if not st.session_state.get("compromis_skipped", False):
+        if "compromis" not in completed_types or "compromis" not in reviewed_types:
+            return 3
+
+    _, information_ready = build_client_summary(documents)
+    return 5 if information_ready else 4
+
+
+def render_credit_journey(active_step):
+    """Afficher les six étapes du parcours dans un format court et lisible."""
+    labels = (
+        "Identité",
+        "Bulletin",
+        "Relevé",
+        "Compromis",
+        "Vérification",
+        "Simulation",
+    )
+    st.progress(min(active_step, 5) / 5)
+    columns = st.columns(len(labels), gap="small")
+
+    for index, (column, label) in enumerate(zip(columns, labels)):
+        if index < active_step:
+            icon = "✅"
+        elif index == active_step:
+            icon = "●"
+        else:
+            icon = "○"
+
+        with column:
+            st.markdown(f"**{icon} {index + 1}**")
+            st.caption(label)
+
+
+def render_guided_document_review(document_id, document, journey_step, advisor_id):
+    """Afficher le contrôle humain obligatoire avant l'étape suivante."""
+    result = document.get("result") or {}
+    control_result = result.get("control_result", {})
+
+    st.subheader(f"Informations détectées — {document.get('filename', 'Document')}")
+    st.caption(
+        "Relisez les informations, corrigez les valeurs nécessaires, puis utilisez "
+        "le bouton Continuer en bas de cette étape."
+    )
+
+    if not control_result.get("valid", False):
+        st.error(
+            f"Document rejeté : {control_result.get('reason', 'raison inconnue')}"
+        )
+        if st.button(
+            "Supprimer et déposer un autre document",
+            icon=":material/delete:",
+            width="stretch",
+            key=f"guided_delete_invalid_{document_id}",
+        ):
+            delete_one_document_dialog(document_id)
+        return
+
+    security = result.get("extraction_security", {})
+    if security.get("suspicious"):
+        st.warning(
+            "Motifs nécessitant une attention : "
+            + ", ".join(security.get("matched_patterns", []))
+        )
+
+    validation_result = result.get("validation_result") or {}
+    fields = validation_result.get("fields", {})
+    if not fields:
+        st.error("Aucune information exploitable n'a été extraite de ce document.")
+        return
+
+    total = len(fields)
+    reliable = sum(
+        field.get("status") == "pre_rempli" for field in fields.values()
+    )
+    review = sum(field.get("status") == "signale" for field in fields.values())
+    absent = sum(field.get("status") == "absent" for field in fields.values())
+    metric_columns = st.columns(4)
+    metric_columns[0].metric("Champs détectés", total, border=True)
+    metric_columns[1].metric("Préremplis", reliable, border=True)
+    metric_columns[2].metric("À vérifier", review, border=True)
+    metric_columns[3].metric("À compléter", absent, border=True)
+
+    if validation_result.get("needs_priority_review"):
+        st.warning("Certaines informations demandent votre attention.")
+    else:
+        st.success("Les informations principales ont été détectées.")
+
+    st.subheader("Vérifier et corriger les informations")
+    confirmations = document.setdefault("confirmed_fields", {})
+    review_complete = render_document_review(
+        result,
+        document["type"],
+        document_id,
+        advisor_id,
+        st.session_state.session_id,
+        confirmations,
+    )
+    st.session_state.confirmed_fields = confirmations
+    save_document(st.session_state.current_client_id, document_id, document)
+
+    current_type = document.get("type")
+    next_label = {
+        "carte_identite": "Continuer vers le bulletin de paie",
+        "bulletin": "Continuer vers le relevé bancaire",
+        "releve": "Continuer vers le compromis",
+        "compromis": "Continuer vers la vérification finale",
+    }.get(current_type, "Continuer")
+
+    st.info(
+        "Quand vos corrections sont terminées, cliquez sur Continuer pour valider "
+        "cette étape."
+    )
+    if st.button(
+        next_label,
+        icon=":material/arrow_forward:",
+        type="primary",
+        width="stretch",
+        disabled=not review_complete,
+        key=f"guided_continue_{document_id}",
+    ):
+        document["journey_reviewed"] = True
+        save_document(st.session_state.current_client_id, document_id, document)
+        st.session_state.current_doc_id = None
+        st.session_state.last_result = None
+        st.session_state.confirmed_fields = {}
+        st.session_state.journey_notice = (
+            f"{DOCUMENT_JOURNEY[journey_step]['title']} vérifié. "
+            "Passage à l'étape suivante."
+        )
+        st.rerun()
+
+    with st.expander("Voir le texte OCR"):
+        st.text(result.get("ocr_text", ""))
+    with st.expander("Détail du moteur de règles"):
+        st.json(validation_result.get("rule_engine", {}))
 
 
 def _remove_uploaded_files(paths):
@@ -768,6 +966,7 @@ def reset_documents_dialog():
         session_paths = [document.get("document_path") for document in documents.values()]
         failures = _remove_uploaded_files(stored_paths + session_paths)
         _clear_document_session(documents)
+        st.session_state.compromis_skipped = False
         for document_id in documents:
             st.session_state.documents.pop(document_id, None)
         audit.log_event(
@@ -938,6 +1137,7 @@ def dossier_readiness():
     rows, business_complete = build_client_summary(documents) if documents else ([], False)
     missing = [row["Champ"] for row in rows if row["Statut"] in ("Manquant", "Conflit")]
     required_documents = {
+        "carte_identite": "Carte d'identité",
         "bulletin": "Bulletin de paie",
         "releve": "Relevé bancaire",
     }
@@ -947,6 +1147,12 @@ def dossier_readiness():
     }
     missing.extend(label for doc_type, label in required_documents.items()
                    if doc_type not in available_types)
+    reviewed_types = reviewed_document_types(documents)
+    missing.extend(
+        f"Vérification du document : {label}"
+        for doc_type, label in required_documents.items()
+        if doc_type not in reviewed_types
+    )
     return documents, rows, business_complete and not missing, missing
 
 
@@ -958,8 +1164,15 @@ def render_application_sidebar():
         document.get("type") for document in documents.values()
         if document.get("status") == "completed"
     }
-    missing_document_count = len({"bulletin", "releve"} - completed_types)
-    documents_ready = missing_document_count == 0
+    missing_document_count = len(
+        {"carte_identite", "bulletin", "releve"} - completed_types
+    )
+    required_types = {"carte_identite", "bulletin", "releve"}
+    reviewed_types = reviewed_document_types(documents)
+    documents_ready = (
+        missing_document_count == 0
+        and required_types.issubset(reviewed_types)
+    )
 
     saved_project = {}
     if account_ready:
@@ -972,14 +1185,10 @@ def render_application_sidebar():
     dossier_complete = False
     if account_ready:
         _, _, dossier_complete, _ = dossier_readiness()
-    simulation_seen = dossier_complete and st.session_state.page == "Simulation"
-    completed_steps = sum((
-        account_ready,
-        project_ready,
-        documents_ready,
-        dossier_complete,
-        simulation_seen,
-    ))
+    journey_step = credit_journey_step(documents) if account_ready else 0
+    completed_steps = journey_step
+    if dossier_complete and st.session_state.page == "Simulation":
+        completed_steps = 6
 
     logo = Path("assets/logo_ca.jpg")
     with st.container(key="sidebar_brand"):
@@ -999,9 +1208,13 @@ def render_application_sidebar():
     with st.container(key="sidebar_progress"):
         progress_header, progress_value = st.columns([2.5, 1], vertical_alignment="center")
         progress_header.markdown("**Avancement du dossier**")
-        progress_value.markdown(f"### {completed_steps * 20} %")
-        st.progress(completed_steps / 5)
-        st.caption(f"{completed_steps} étape{'s' if completed_steps != 1 else ''} sur 5 complétée{'s' if completed_steps != 1 else ''}")
+        progress_percent = round(completed_steps / 6 * 100)
+        progress_value.markdown(f"### {progress_percent} %")
+        st.progress(completed_steps / 6)
+        st.caption(
+            f"{completed_steps} étape{'s' if completed_steps != 1 else ''} sur 6 "
+            f"complétée{'s' if completed_steps != 1 else ''}"
+        )
 
     st.caption("MON DOSSIER")
     with st.container(key="sidebar_nav"):
@@ -1049,9 +1262,10 @@ def render_application_sidebar():
             if account_ready:
                 if missing_document_count:
                     st.badge(f"{missing_document_count} manq.", color="red")
-            else:
-                if account_ready:
+                elif documents_ready:
                     st.badge("OK", color="green")
+                else:
+                    st.badge("À vér.", color="orange")
 
         verify_column, verify_status = st.columns([3.3, 1], vertical_alignment="center")
         with verify_column:
@@ -1117,7 +1331,7 @@ def render_application_sidebar():
             if logout:
                 for key in (
                     "documents", "current_doc_id", "confirmed_fields", "last_result",
-                    "chat_history", "customer_profile",
+                    "chat_history", "customer_profile", "compromis_skipped",
                 ):
                     st.session_state.pop(key, None)
                 st.session_state.account_created = False
@@ -1447,6 +1661,9 @@ if "account_created" not in st.session_state:
 if "customer_profile" not in st.session_state:
     st.session_state.customer_profile = {}
 
+if "compromis_skipped" not in st.session_state:
+    st.session_state.compromis_skipped = False
+
 # L'ancienne page de chat est remplacée par l'assistant permanent à droite.
 if st.session_state.page == "Assistant":
     st.session_state.page = "Accueil"
@@ -1681,11 +1898,17 @@ elif st.session_state.page == "Extraction":
     if not st.session_state.account_created:
         st.session_state.page = "Accueil"
         st.rerun()
-    st.title("Mes justificatifs")
-    st.caption("Déposez chaque justificatif, contrôlez son statut, puis vérifiez les informations détectées.")
+    st.title("Mon parcours de crédit habitat")
+    st.caption(
+        "Avancez simplement, une étape après l'autre. Le prochain document à "
+        "ajouter est sélectionné automatiquement."
+    )
     reset_notice = st.session_state.pop("documents_reset_notice", None)
     if reset_notice:
         st.success(reset_notice, icon=":material/check_circle:")
+    journey_notice = st.session_state.pop("journey_notice", None)
+    if journey_notice:
+        st.success(journey_notice, icon=":material/check_circle:")
     
     # -----------------------------------------------------
     # LISTE DES DOCUMENTS DU CLIENT
@@ -1696,6 +1919,37 @@ elif st.session_state.page == "Extraction":
         for doc_id, doc_data in st.session_state.documents.items()
         if doc_data.get("client_id") == st.session_state.current_client_id
     }
+
+    journey_step = credit_journey_step(client_docs)
+
+    # Si le document de l'étape a déjà été analysé, le sélectionner afin que
+    # l'utilisateur puisse relire et corriger ses champs avant de continuer.
+    if journey_step < len(DOCUMENT_JOURNEY):
+        active_document_type = DOCUMENT_JOURNEY[journey_step]["type"]
+        selected_document = st.session_state.documents.get(
+            st.session_state.current_doc_id
+        )
+        if not selected_document or selected_document.get("type") != active_document_type:
+            matching_documents = [
+                (document_id, document)
+                for document_id, document in client_docs.items()
+                if document.get("type") == active_document_type
+                and document.get("status") == "completed"
+            ]
+            matching_documents.sort(
+                key=lambda item: item[1].get("timestamp") or "",
+                reverse=True,
+            )
+            if matching_documents:
+                selected_id, selected_document = matching_documents[0]
+                st.session_state.current_doc_id = selected_id
+                st.session_state.last_result = selected_document.get("result")
+                st.session_state.confirmed_fields = selected_document.get(
+                    "confirmed_fields", {}
+                )
+
+    render_credit_journey(journey_step)
+    st.divider()
     
     if client_docs:
         st.subheader("Mes documents")
@@ -1759,47 +2013,104 @@ elif st.session_state.page == "Extraction":
                 if document.get("status") == "completed"
             }
             missing_documents = []
+            if "carte_identite" not in completed_types:
+                missing_documents.append("une carte d'identité")
             if "bulletin" not in completed_types:
                 missing_documents.append("un bulletin de paie")
             if "releve" not in completed_types:
                 missing_documents.append("un relevé bancaire")
             st.info("Ajoutez " + " et ".join(missing_documents) + " pour passer à la vérification.")
 
-        with st.container(horizontal=True, horizontal_alignment="distribute"):
-            if st.button(
-                "Vérifier mes 5 informations",
-                icon=":material/fact_check:",
-                type="primary",
-                disabled=not documents_ready,
-                key="open_final_verification",
-            ):
-                st.session_state.page = "Verification"
-                st.rerun()
-            if st.button(
-                "Recommencer avec de nouveaux justificatifs",
-                icon=":material/delete_sweep:",
-                key="reset_all_documents",
-            ):
-                reset_documents_dialog()
+        if st.button(
+            "Recommencer avec de nouveaux justificatifs",
+            icon=":material/delete_sweep:",
+            key="reset_all_documents",
+        ):
+            reset_documents_dialog()
         
         st.divider()
+
+    if journey_step == 4:
+        st.subheader("Étape 5 — Vérifier mes informations")
+        st.success(
+            "Les documents nécessaires sont prêts. Vérifiez maintenant les cinq "
+            "informations utilisées par la simulation."
+        )
+        if st.session_state.get("compromis_skipped", False):
+            st.caption(
+                "Le compromis a été ignoré pour le moment. Vous pourrez l'ajouter "
+                "ultérieurement si nécessaire."
+            )
+        if st.button(
+            "Vérifier mes 5 informations",
+            icon=":material/fact_check:",
+            type="primary",
+            width="stretch",
+            key="journey_open_verification",
+        ):
+            st.session_state.page = "Verification"
+            st.rerun()
+        st.stop()
+
+    if journey_step == 5:
+        st.subheader("Étape 6 — Accéder à ma simulation")
+        st.success("Vos cinq informations sont vérifiées. Votre simulation est prête.")
+        if st.button(
+            "Voir ma simulation",
+            icon=":material/calculate:",
+            type="primary",
+            width="stretch",
+            key="journey_open_simulation",
+        ):
+            st.session_state.page = "Simulation"
+            st.rerun()
+        st.stop()
+
+    document_step = DOCUMENT_JOURNEY[journey_step]
+    document_type = document_step["type"]
+
+    st.subheader(f"Étape {journey_step + 1} — {document_step['title']}")
+    st.write(document_step["instruction"])
+
+    active_document_id = st.session_state.current_doc_id
+    active_document = st.session_state.documents.get(active_document_id)
+    if (
+        active_document
+        and active_document.get("type") == document_type
+        and active_document.get("status") == "completed"
+        and active_document.get("result")
+    ):
+        render_guided_document_review(
+            active_document_id,
+            active_document,
+            journey_step,
+            advisor_id,
+        )
+        st.stop()
+
+    if document_step["optional"]:
+        st.info(
+            "Cette étape est facultative. Vous pouvez continuer même si vous "
+            "n'avez pas encore signé de compromis."
+        )
+        if st.button(
+            "Continuer sans compromis",
+            icon=":material/skip_next:",
+            width="stretch",
+            key="skip_optional_compromis",
+        ):
+            st.session_state.compromis_skipped = True
+            st.session_state.current_doc_id = None
+            st.session_state.last_result = None
+            st.rerun()
     
     # -----------------------------------------------------
     # AJOUTER UN NOUVEAU DOCUMENT
     # -----------------------------------------------------
     
-    st.subheader("1. Déposer un justificatif")
-    
     col_upload, col_data = st.columns([1.1, 0.9], gap="large")
     
     with col_upload:
-        document_type = st.selectbox(
-            "Type de document",
-            options=list(DOCUMENT_SCHEMAS.keys()),
-            help="Sélectionnez le type de document pour optimiser l'extraction",
-            key="doc_type_select"
-        )
-        
         is_identity = document_type == "carte_identite"
         identity_mode = None
 
@@ -1897,7 +2208,7 @@ elif st.session_state.page == "Extraction":
                 st.caption(f"📦 Taille totale : {total_size / 1024:.1f} KB")
     
     with col_data:
-        st.subheader("2. Vérification facultative")
+        st.subheader("Informations connues (facultatif)")
         st.caption("Vous pouvez laisser cette partie vide : le document sera analysé automatiquement.")
         with st.expander("Comparer avec les informations que je connais"):
             declared_data = render_declared_form(document_type, st.session_state.current_client_id)
@@ -1919,7 +2230,8 @@ elif st.session_state.page == "Extraction":
     col_buttons = st.columns([1, 1])
     with col_buttons[0]:
         st.button(
-            "🚀 Lancer l'analyse",
+            "Analyser et continuer",
+            icon=":material/arrow_forward:",
             type="primary",
             width="stretch",
             disabled=st.session_state.processing or not upload_ready,
@@ -1965,6 +2277,7 @@ elif st.session_state.page == "Extraction":
             "status": "processing",
             "result": None,
             "confirmed_fields": {},
+            "journey_reviewed": False,
             "declared_data": declared_data
         }
         
@@ -1994,6 +2307,12 @@ elif st.session_state.page == "Extraction":
                 st.session_state.current_client_id, doc_id,
                 st.session_state.documents[doc_id],
             )
+            st.session_state.journey_notice = (
+                f"{document_step['title']} analysé avec succès. Vérifiez et "
+                "corrigez maintenant les informations extraites avant de continuer."
+            )
+            if document_type == "compromis":
+                st.session_state.compromis_skipped = False
             
             # Log dans l'audit
             try:
@@ -2081,7 +2400,11 @@ elif st.session_state.page == "Extraction":
                     else:
                         st.success("Les informations principales ont été détectées.")
                     
-                    st.subheader("3. Vérifier mes informations")
+                    st.subheader("Vérifier les informations extraites")
+                    st.caption(
+                        "Corrigez les valeurs si nécessaire et confirmez celles que "
+                        "vous souhaitez conserver avant de passer à la suite."
+                    )
                     confirmations = current_doc.setdefault("confirmed_fields", {})
                     render_document_review(
                         result, current_doc["type"], st.session_state.current_doc_id,
@@ -2094,21 +2417,46 @@ elif st.session_state.page == "Extraction":
                         current_doc,
                     )
 
-                    documents_ready = required_documents_ready()
-                    if not documents_ready:
+                    active_type = (
+                        DOCUMENT_JOURNEY[journey_step]["type"]
+                        if journey_step < len(DOCUMENT_JOURNEY)
+                        else None
+                    )
+                    current_type = current_doc.get("type")
+                    is_active_document = current_type == active_type
+                    next_label = {
+                        "carte_identite": "Continuer vers le bulletin de paie",
+                        "bulletin": "Continuer vers le relevé bancaire",
+                        "releve": "Continuer vers le compromis",
+                        "compromis": "Continuer vers la vérification finale",
+                    }.get(current_type, "Continuer")
+
+                    if not is_active_document:
                         st.info(
-                            "Ajoutez au minimum un bulletin de paie et un relevé bancaire "
-                            "avant de passer à la vérification finale."
+                            "Vous consultez un ancien document. Revenez au document "
+                            "de l'étape actuelle pour poursuivre le parcours."
                         )
                     if st.button(
-                        "Continuer vers la vérification",
+                        next_label,
                         icon=":material/arrow_forward:",
                         type="primary",
                         width="stretch",
-                        disabled=not documents_ready,
-                        key=f"continue_verification_{st.session_state.current_doc_id}",
+                        disabled=not is_active_document,
+                        key=f"continue_journey_{st.session_state.current_doc_id}",
                     ):
-                        st.session_state.page = "Verification"
+                        current_doc["journey_reviewed"] = True
+                        save_document(
+                            st.session_state.current_client_id,
+                            st.session_state.current_doc_id,
+                            current_doc,
+                        )
+                        st.session_state.current_doc_id = None
+                        st.session_state.last_result = None
+                        st.session_state.confirmed_fields = {}
+                        st.session_state.journey_notice = (
+                            f"{DOCUMENT_JOURNEY[journey_step]['title']} vérifié. "
+                            "Passage à l'étape suivante."
+                        )
                         st.rerun()
                     
                     # Sections détaillées
@@ -2141,7 +2489,10 @@ elif st.session_state.page == "Verification":
     client_docs = current_client_documents()
     if not required_documents_ready(client_docs):
         st.title("Vérification indisponible")
-        st.warning("Ajoutez d'abord un bulletin de paie et un relevé bancaire analysés.")
+        st.warning(
+            "Ajoutez d'abord votre carte d'identité, votre bulletin de paie "
+            "et votre relevé bancaire."
+        )
         if st.button(
             "Retourner à mes documents",
             icon=":material/upload_file:",
