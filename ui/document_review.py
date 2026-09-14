@@ -112,187 +112,85 @@ def _text_value(value):
 
 
 def render_document_review(result, document_type, document_id, advisor_id, session_id, confirmations):
-    """Afficher le tableau modifiable et retourner si les champs requis sont confirmés."""
+    """Valider tous les champs en une action ; le parent sauvegarde puis avance."""
     fields = result["validation_result"]["fields"]
-    st.caption(
-        "Modifiez directement la colonne « Valeur ». Les informations techniques "
-        "volumineuses, comme les transactions, ne sont pas affichées dans ce tableau."
-    )
-
-    original = Path(result.get("pdf_path", ""))
-    upload_root = Path("data/uploads").resolve()
-    if original.is_file() and original.resolve().is_relative_to(upload_root):
-        st.download_button(
-            "Consulter le document original",
-            original.read_bytes(),
-            file_name=original.name,
-            key=f"original_{document_id}",
-        )
-
     names = _review_field_names(fields, document_type)
-    decisions = {}
-    table_rows = []
+    essential = list(REQUIRED_FIELDS[document_type])
+    if document_type == "releve":
+        essential.append("revenus_complementaires")
+    if document_type == "compromis":
+        essential = list(REVIEW_FIELDS[document_type])
+    names = list(dict.fromkeys(essential + names))
+    decisions = {name: fields.get(name) or {"value": None, "source": None} for name in names}
+    st.caption("Corrigez les champs ci-dessous. En validant, vous confirmez les avoir vérifiés avec votre document.")
+    original = Path(result.get("pdf_path", ""))
+    if original.is_file() and original.resolve().is_relative_to(Path("data/uploads").resolve()):
+        st.download_button("Consulter mon document", original.read_bytes(),
+                           file_name=original.name, key=f"original_{document_id}")
+    values = {}
+
+    def render_field(name):
+        record = confirmations.get(name) or {}
+        confirmed = (record.get("document_id") == document_id
+                     and record.get("source_checked") is True
+                     and record.get("status") in ("confirme", "corrige"))
+        value = record.get("value") if confirmed else decisions[name].get("value")
+        label = LABELS.get(name, name.replace("_", " ").capitalize())
+        # Text inputs preserve missing/invalid OCR values for explicit correction.
+        values[name] = st.text_input(label, value=_text_value(value),
+                                    key=f"review_value_{document_id}_{name}",
+                                    help="JJ/MM/AAAA ou AAAA-MM-JJ" if name in DATE_FIELDS else None)
+        if name in ("charge_mensuelle_credits", "revenus_complementaires"):
+            absent = st.checkbox("Aucun crédit en cours" if name == "charge_mensuelle_credits"
+                                 else "Aucun revenu complémentaire", key=f"none_{document_id}_{name}")
+            if absent:
+                values[name] = "0"
+            st.caption("Cochez « Aucun » pour retenir 0 à la place du montant saisi.")
+
+    with st.form(f"document_review_form_{document_id}", border=True):
+        for name in essential:
+            render_field(name)
+        with st.expander("Autres informations du document"):
+            for name in names:
+                if name not in essential:
+                    render_field(name)
+        submitted = st.form_submit_button("Valider et continuer", type="primary", width="stretch")
+    if not submitted:
+        return False
+    prepared = {}
+    errors = []
+    required = set(REQUIRED_FIELDS[document_type])
+    if document_type == "releve":
+        required.add("revenus_complementaires")
     for name in names:
-        decision = fields.get(name) or {
-            "value": None,
-            "status": "absent",
-            "source": None,
-            "reasons": [],
-        }
-        decisions[name] = decision
-        record = confirmations.get(name)
-        confirmed = (
-            isinstance(record, dict)
-            and record.get("document_id") == document_id
-            and record.get("status") in ("confirme", "corrige")
-            and record.get("source_checked") is True
-        )
-        value = record.get("value") if confirmed else decision.get("value")
-        source = (record.get("source") if confirmed else decision.get("source")) or {}
-        if confirmed:
-            status = "Confirmée"
-        elif value is None:
-            status = "À compléter"
-        elif decision.get("status") == "signale":
-            status = "À vérifier"
-        else:
-            status = "Extraite"
-        document_name = source.get("document") or Path(result.get("pdf_path", "")).name or "Document"
-        page = source.get("page")
-        source_label = document_name + (f" — page {page}" if page else "")
-        table_rows.append({
-            "Information": LABELS.get(name, name.replace("_", " ").capitalize()),
-            "Valeur": _text_value(value),
-            "Statut": status,
-            "Justificatif": source_label,
-        })
-
-    with st.form(f"document_review_table_form_{document_id}", border=True):
-        edited = st.data_editor(
-            table_rows,
-            hide_index=True,
-            width="stretch",
-            num_rows="fixed",
-            disabled=["Information", "Statut", "Justificatif"],
-            column_config={
-                "Information": st.column_config.TextColumn("Information", pinned=True),
-                "Valeur": st.column_config.TextColumn("Valeur corrigée"),
-                "Statut": st.column_config.TextColumn("État"),
-                "Justificatif": st.column_config.TextColumn("Source"),
-            },
-            key=f"document_review_table_{document_id}",
-        )
-        checked = st.checkbox(
-            "J'ai vérifié les informations modifiées avec mon justificatif",
-            key=f"document_review_checked_{document_id}",
-        )
-        submitted = st.form_submit_button(
-            "Enregistrer toutes mes corrections",
-            icon=":material/save:",
-            type="primary",
-            width="stretch",
-        )
-
-    if submitted:
-        if not checked:
-            st.error("Cochez la confirmation après avoir vérifié le tableau.")
-        else:
-            records = edited.to_dict("records") if hasattr(edited, "to_dict") else list(edited)
-            prepared = {}
-            cleared = []
-            errors = []
-            required_fields = set(REQUIRED_FIELDS[document_type])
-            for index, name in enumerate(names):
-                edited_value = records[index].get("Valeur")
-                if edited_value is None or not str(edited_value).strip():
-                    if name in required_fields:
-                        errors.append(
-                            f"{LABELS.get(name, name.replace('_', ' ').capitalize())} : "
-                            "renseignez une valeur"
-                        )
-                    else:
-                        cleared.append(name)
-                    continue
-                try:
-                    prepared[name] = make_confirmation(
-                        document_type,
-                        name,
-                        edited_value,
-                        decisions[name],
-                        document_id=document_id,
-                        advisor_id=advisor_id,
-                        source_checked=True,
-                    )
-                except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                    errors.append(
-                        f"{LABELS.get(name, name.replace('_', ' ').capitalize())} : {exc}"
-                    )
-
-            if errors:
-                for error in errors:
-                    st.error(error)
-            else:
-                for name in cleared:
-                    confirmations.pop(name, None)
-                for name, record in prepared.items():
-                    confirmations[name] = record
-                    audit.log_human_confirmation(
-                        document_path=result.get("pdf_path", document_id),
-                        document_type=document_type,
-                        field_name=name,
-                        confirmed_value=record["value"],
-                        advisor_id=advisor_id,
-                        session_id=session_id,
-                        original_value=record["original_value"],
-                        source=record["source"],
-                        confirmation_status=record["status"],
-                    )
-                st.success("Toutes les corrections du tableau sont enregistrées.")
-                st.rerun()
-
-    with st.expander("Voir les extraits utilisés comme preuves", icon=":material/article:"):
-        evidence_rows = []
-        for name in names:
-            source = decisions[name].get("source") or {}
-            if source.get("quote"):
-                evidence_rows.append({
-                    "Information": LABELS.get(name, name.replace("_", " ").capitalize()),
-                    "Page": _text_value(source.get("page")),
-                    "Extrait OCR": _text_value(source.get("quote")),
-                })
-        if evidence_rows:
-            st.dataframe(evidence_rows, hide_index=True, width="stretch")
-        else:
-            st.caption("Aucun extrait précis n'est disponible pour ce document.")
-
-    missing = [
-        name for name in REQUIRED_FIELDS[document_type]
-        if not isinstance(confirmations.get(name), dict)
-        or confirmations[name].get("document_id") != document_id
-        or confirmations[name].get("value") is None
-    ]
-    if missing:
-        st.warning(
-            "Informations obligatoires à vérifier : "
-            + ", ".join(LABELS.get(name, name.replace("_", " ").capitalize()) for name in missing)
-        )
-    else:
-        st.success(
-            "Les informations obligatoires sont enregistrées. Vous pouvez continuer."
-        )
-
+        value = values[name]
+        if not str(value).strip():
+            if name in required:
+                errors.append(f"{LABELS.get(name, name.replace('_', ' ').capitalize())} : renseignez une valeur.")
+            continue
+        try:
+            record = make_confirmation(document_type, name, value, decisions[name],
+                                       document_id=document_id, advisor_id=advisor_id, source_checked=True)
+            if name == "salaire_net" and record["value"] <= 0:
+                raise ValueError("Le revenu doit être supérieur à zéro.")
+            prepared[name] = record
+        except (ValueError, TypeError) as exc:
+            errors.append(f"{LABELS.get(name, name)} : {exc}")
+    if errors:
+        for error in errors:
+            st.error(error)
+        return False
     try:
-        csv_data = export_confirmed_csv(result, document_type, confirmations, document_id)
-    except (ValueError, TypeError) as exc:
-        st.error(f"Export bloqué : {exc}")
-        csv_data = None
-    st.download_button(
-        "Télécharger mes informations vérifiées (CSV)",
-        csv_data or b"",
-        file_name=f"champs_confirmes_{document_type}.csv",
-        mime="text/csv",
-        disabled=csv_data is None,
-        key=f"export_{document_id}",
-        on_click="ignore",
-    )
-    return not missing
+        for name, record in prepared.items():
+            audit.log_human_confirmation(
+                document_path=result.get("pdf_path", document_id), document_type=document_type,
+                field_name=name, confirmed_value=record["value"], advisor_id=advisor_id,
+                session_id=session_id, original_value=record["original_value"],
+                source=record["source"], confirmation_status=record["status"],
+            )
+    except Exception:
+        st.error("La validation n'a pas pu être enregistrée. Vos saisies sont conservées ; réessayez.")
+        return False
+    confirmations.clear()
+    confirmations.update(prepared)
+    return True

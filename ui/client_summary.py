@@ -254,48 +254,19 @@ def render_final_verification(documents, customer_id, advisor_id, session_id):
             + ", ".join(conflicts)
             + ". Corrigez la colonne « Valeur » après comparaison des pièces."
         )
-    st.info(
-        "Vérifiez les cinq lignes. Si vous n'avez ni crédit en cours ni revenu "
-        "complémentaire, saisissez 0 dans la ligne correspondante."
-    )
-
+    values = {}
     with st.form(f"five_fields_verification_{customer_id}", border=True):
-        edited = st.data_editor(
-            table_rows,
-            hide_index=True,
-            width="stretch",
-            num_rows="fixed",
-            disabled=["Information", "Source", "État"],
-            column_config={
-                "Information": st.column_config.TextColumn("Information", pinned=True),
-                "Valeur": st.column_config.TextColumn("Valeur à utiliser", required=True),
-                "Source": st.column_config.TextColumn("Justificatif"),
-                "État": st.column_config.TextColumn("Contrôle"),
-            },
-            key=f"verification_table_{customer_id}",
-        )
-        checked = st.checkbox(
-            "J'ai vérifié ces cinq informations avec mes justificatifs",
-            key=f"verification_checked_{customer_id}",
-        )
-        submitted = st.form_submit_button(
-            "Vérifier et accéder à ma simulation",
-            icon=":material/check_circle:",
-            type="primary",
-            width="stretch",
-        )
-
+        st.caption("Ces valeurs reprennent vos corrections. En continuant, vous confirmez ce récapitulatif.")
+        for field in FIELD_ORDER:
+            values[field] = st.text_input(
+                BUSINESS_FIELDS[field]["label"], value=proposals[field]["value"],
+                key=f"final_{customer_id}_{field}_" + str(proposals[field]["value"]),
+                help="JJ/MM/AAAA ou AAAA-MM-JJ" if field == "date_embauche" else None,
+            )
+        submitted = st.form_submit_button("Voir ma simulation", type="primary", width="stretch")
     if not submitted:
         return False
-    if not checked:
-        st.error("Cochez la confirmation après avoir vérifié les cinq informations.")
-        return False
 
-    records = edited.to_dict("records") if hasattr(edited, "to_dict") else list(edited)
-    values = {
-        field: records[index].get("Valeur")
-        for index, field in enumerate(FIELD_ORDER)
-    }
     prepared = {}
     errors = []
     for field in FIELD_ORDER:
@@ -323,33 +294,36 @@ def render_final_verification(documents, customer_id, advisor_id, session_id):
             st.error(error)
         return False
 
+    try:
+        for field, (selected_id, selected_document, confirmation) in prepared.items():
+            audit.log_human_confirmation(
+                document_path=selected_document.get("document_path") or selected_id,
+                document_type=selected_document.get("type"), field_name=field,
+                confirmed_value=confirmation["value"], advisor_id=advisor_id,
+                session_id=session_id, original_value=confirmation["original_value"],
+                source=confirmation.get("source") or {}, confirmation_status=confirmation["status"],
+            )
+    except Exception:
+        st.error("La validation n'a pas pu être enregistrée. Réessayez pour accéder à la simulation.")
+        return False
+    from copy import deepcopy
+    updated = deepcopy(documents)
     modified = set()
-    for field, (selected_id, selected_document, confirmation) in prepared.items():
-        for document_id, document in documents.items():
-            if document_id == selected_id:
-                continue
-            confirmations = document.get("confirmed_fields") or {}
-            if field in confirmations:
-                confirmations.pop(field, None)
-                document["confirmed_fields"] = confirmations
+    for field, (selected_id, _, confirmation) in prepared.items():
+        for document_id, document in updated.items():
+            if document_id != selected_id and field in (document.get("confirmed_fields") or {}):
+                document["confirmed_fields"].pop(field)
                 modified.add(document_id)
-        selected_document.setdefault("confirmed_fields", {})[field] = confirmation
+        updated[selected_id].setdefault("confirmed_fields", {})[field] = confirmation
         modified.add(selected_id)
-        source = confirmation.get("source") or {}
-        audit.log_human_confirmation(
-            document_path=selected_document.get("document_path") or selected_id,
-            document_type=selected_document.get("type"),
-            field_name=field,
-            confirmed_value=confirmation["value"],
-            advisor_id=advisor_id,
-            session_id=session_id,
-            original_value=confirmation["original_value"],
-            source=source,
-            confirmation_status=confirmation["status"],
-        )
-
+    try:
+        for document_id in modified:
+            save_document(customer_id, document_id, updated[document_id])
+    except Exception:
+        st.error("La sauvegarde a échoué. Réessayez avant de poursuivre.")
+        return False
     for document_id in modified:
-        save_document(customer_id, document_id, documents[document_id])
+        documents[document_id].update(updated[document_id])
 
     st.toast("Vos informations sont vérifiées. Simulation débloquée.", icon=":material/check_circle:")
     st.session_state.page = "Simulation"

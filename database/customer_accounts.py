@@ -68,6 +68,10 @@ def init_database():
             """
         )
 
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(customer_documents)")}
+        if "journey_reviewed" not in columns:
+            connection.execute("ALTER TABLE customer_documents ADD COLUMN journey_reviewed INTEGER NOT NULL DEFAULT 0")
+
 
 def _normalize_email(email):
     return str(email or "").strip().casefold()
@@ -164,15 +168,15 @@ def save_document(customer_id, document_id, document):
         connection.execute(
             """INSERT INTO customer_documents
                (document_id,customer_id,document_type,filename,document_path,status,
-                result_json,confirmed_json,created_at,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
+                result_json,confirmed_json,created_at,updated_at,journey_reviewed)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(document_id) DO UPDATE SET
                status=excluded.status, result_json=excluded.result_json,
                confirmed_json=excluded.confirmed_json, document_path=excluded.document_path,
-               updated_at=excluded.updated_at""",
+               updated_at=excluded.updated_at, journey_reviewed=excluded.journey_reviewed""",
             (document_id, customer_id, document.get("type"), document.get("filename") or "Document",
              document.get("document_path"), document.get("status") or "processing", payload,
-             confirmed, document.get("timestamp") or now, now),
+             confirmed, document.get("timestamp") or now, now, int(document.get("journey_reviewed") is True)),
         )
 
 
@@ -189,7 +193,7 @@ def load_documents(customer_id):
             "filename": row["filename"], "document_path": row["document_path"],
             "status": row["status"], "result": json.loads(row["result_json"] or "null"),
             "confirmed_fields": json.loads(row["confirmed_json"] or "{}"),
-            "timestamp": row["created_at"],
+            "timestamp": row["created_at"], "journey_reviewed": bool(row["journey_reviewed"]),
         }
     return documents
 
