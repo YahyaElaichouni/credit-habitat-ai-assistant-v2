@@ -14,7 +14,7 @@ Interface de démonstration permettant de tester :
 Tous les appels passent par Orchestrator afin de conserver
 un point d'entrée unique cohérent avec l'architecture du projet.
 """
-
+from ocr.scan_quality import analyze_document_quality
 import json
 import base64
 import logging
@@ -68,7 +68,13 @@ def get_orchestrator():
     """Créer l'orchestrator une seule fois (caché)"""
     from agents.orchestrator import Orchestrator
     return Orchestrator()
-
+@st.cache_data(show_spinner=False)
+def get_document_quality(file_content: bytes, filename: str):
+    """Éviter de recalculer la qualité à chaque rerun Streamlit."""
+    return analyze_document_quality(
+        content=file_content,
+        filename=filename,
+    )
 # =========================================================
 # DESIGN - STYLES AMÉLIORÉS
 # =========================================================
@@ -1654,7 +1660,7 @@ if st.session_state.page == "Accueil":
         st.markdown(
             """
             <section class="ca-hero">
-                <div class="ca-eyebrow">ÉTAPE 1 · ESPACE CLIENT</div>
+                <div class="ca-eyebrow"> ESPACE CLIENT</div>
                 <h1>Commençons votre projet habitat.</h1>
                 <p>Créez votre espace personnel pour sauvegarder vos justificatifs,
                 reprendre votre parcours et affiner votre simulation.</p>

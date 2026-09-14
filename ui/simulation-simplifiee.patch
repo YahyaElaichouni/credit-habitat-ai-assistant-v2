@@ -1,0 +1,2091 @@
+diff --git a/app.py b/app.py
+index 4ad2b71..77bbecd 100644
+--- a/app.py
++++ b/app.py
+@@ -18,7 +18,6 @@ un point d'entrée unique cohérent avec l'architecture du projet.
+ import json
+ import base64
+ import logging
+-import math
+ import uuid
+ import time
+ import pickle
+@@ -29,7 +28,6 @@ from datetime import datetime
+ import streamlit as st
+ import streamlit.components.v1 as components
+ 
+-from agents.orchestrator import Orchestrator
+ from config.settings import settings
+ from database import audit
+ from database.customer_accounts import (
+@@ -37,7 +35,9 @@ from database.customer_accounts import (
+     load_documents, load_project, save_document, save_project,
+ )
+ from extraction.schema import DOCUMENT_SCHEMAS
+-from ui.document_review import render_declared_form, render_document_review
++from ui.document_review import render_document_review
++from ui.simulation import render_simulation
++from copy import deepcopy
+ from ui.client_summary import (
+     build_client_summary, render_client_summary, render_final_verification,
+ )
+@@ -66,6 +66,7 @@ st.set_page_config(
+ @st.cache_resource
+ def get_orchestrator():
+     """Créer l'orchestrator une seule fois (caché)"""
++    from agents.orchestrator import Orchestrator
+     return Orchestrator()
+ 
+ # =========================================================
+@@ -89,54 +90,54 @@ def inject_app_styles():
+                 #f7faf8;
+         }
+         [data-testid="stSidebar"] {
+-            background: linear-gradient(180deg, #073b2c 0%, #0a4b38 55%, #062f24 100%);
+-            border-right: 0;
+-            min-width: 330px;
+-            max-width: 330px;
+-            box-shadow: 14px 0 42px rgba(4, 45, 33, .14);
++            background: #f7f9f8;
++            border-right: 1px solid #dfe8e3;
++            min-width: 310px;
++            max-width: 310px;
++            box-shadow: 8px 0 28px rgba(7, 59, 44, .06);
+         }
+         [data-testid="stSidebar"] > div:first-child {
+             padding: 1.35rem 1.15rem 1.25rem;
+         }
+         [data-testid="stSidebar"] * {
+-            color: #f4fbf7;
++            color: #173f32;
+         }
+         [data-testid="stSidebar"] [data-baseweb="input"] > div {
+-            background: rgba(255,255,255,.10);
+-            border-color: rgba(255,255,255,.22);
++            background: #ffffff;
++            border-color: #cadbd3;
+         }
+         [data-testid="stSidebar"] input {
+-            color: #ffffff !important;
++            color: #173f32 !important;
+         }
+         [data-testid="stSidebar"] hr {
+-            border-color: rgba(255,255,255,.15);
++            border-color: #dfe8e3;
+         }
+         [data-testid="stSidebar"] .stButton > button {
+-            min-height: 3.15rem;
+-            border-radius: .9rem;
+-            border: 1px solid rgba(255,255,255,.16);
+-            background: rgba(255,255,255,.06);
++            min-height: 3rem;
++            border-radius: .75rem;
++            border: 1px solid transparent;
++            background: transparent;
+             justify-content: flex-start;
+-            padding-inline: 1rem;
++            padding-inline: .85rem;
+             font-weight: 650;
+-            transition: transform .16s ease, background .16s ease, border-color .16s ease;
++            box-shadow: none;
++            transition: background .16s ease, border-color .16s ease;
+         }
+         [data-testid="stSidebar"] .stButton > button:hover {
+-            transform: translateX(3px);
+-            background: rgba(255,255,255,.14);
+-            border-color: rgba(255,255,255,.30);
++            background: #edf5f1;
++            border-color: #d3e5dc;
+         }
+         [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+-            background: #ffffff;
+-            border-color: #ffffff;
++            background: #086b48;
++            border-color: #086b48;
+         }
+         [data-testid="stSidebar"] .stButton > button[kind="primary"] * {
+-            color: #073b2c !important;
++            color: #ffffff !important;
+             font-weight: 700;
+         }
+         .st-key-sidebar_brand {
+-            padding-bottom: .7rem;
+-            border-bottom: 1px solid rgba(255,255,255,.16);
++            padding-bottom: 1rem;
++            border-bottom: 1px solid #dfe8e3;
+         }
+         .st-key-sidebar_brand [data-testid="stImage"] img {
+             border-radius: .6rem;
+@@ -144,42 +145,43 @@ def inject_app_styles():
+             padding: .22rem;
+         }
+         .st-key-sidebar_intro {
+-            padding: 1rem .15rem .35rem;
++            padding: 1.1rem .15rem .45rem;
+         }
+         .st-key-sidebar_intro h2 {
+             margin-bottom: .15rem;
+-            color: #ffffff;
++            color: #073b2c;
+         }
+         .st-key-sidebar_intro p {
+-            color: rgba(244,251,247,.72) !important;
++            color: #64776f !important;
+         }
+         .st-key-sidebar_progress {
+-            margin: .5rem 0 1.15rem;
+-            padding: 1rem;
+-            border: 1px solid rgba(255,255,255,.13);
+-            border-radius: 1rem;
+-            background: rgba(255,255,255,.06);
++            margin: .55rem 0 1rem;
++            padding: .9rem 1rem;
++            border: 1px solid #dce8e2;
++            border-radius: .9rem;
++            background: #ffffff;
+         }
+         .st-key-sidebar_progress [data-testid="stProgress"] > div > div {
+-            background: linear-gradient(90deg, #34d17f, #67e49e);
++            background: #0b8a5b;
+         }
+         .st-key-sidebar_nav {
+-            padding-top: .15rem;
++            padding-top: .2rem;
+         }
+-        .st-key-sidebar_nav [data-testid="stColumn"]:last-child {
+-            display: flex;
+-            align-items: center;
+-            justify-content: flex-end;
++        .sidebar-step-hint {
++            margin: -.45rem .85rem .5rem 2.85rem;
++            color: #718078;
++            font-size: .75rem;
++            line-height: 1.25;
+         }
+         .st-key-sidebar_support {
+             margin-top: 1.25rem;
+             padding-top: 1rem;
+-            border-top: 1px solid rgba(255,255,255,.16);
++            border-top: 1px solid #dfe8e3;
+         }
+         .st-key-sidebar_profile {
+             margin-top: .8rem;
+             padding-top: 1rem;
+-            border-top: 1px solid rgba(255,255,255,.16);
++            border-top: 1px solid #dfe8e3;
+         }
+         .st-key-sidebar_profile p {
+             margin-bottom: .15rem;
+@@ -349,6 +351,15 @@ def inject_app_styles():
+             font-size: .78rem;
+             font-weight: 800;
+         }
++        .st-key-home_offer_card [data-testid="stVerticalBlockBorderWrapper"],
++        .st-key-home_estimate_card [data-testid="stVerticalBlockBorderWrapper"] {
++            min-height: 245px;
++            padding: .35rem;
++        }
++        .st-key-home_help_banner [data-testid="stVerticalBlockBorderWrapper"] {
++            background: linear-gradient(100deg, #f1f8f5, #ffffff);
++            border-color: rgba(0, 122, 77, .18);
++        }
+         div[data-testid="stMetric"] {
+             background: rgba(255,255,255,.92);
+             border: 1px solid var(--ca-border);
+@@ -766,7 +777,7 @@ def credit_journey_step(documents=None):
+             return 3
+ 
+     _, information_ready = build_client_summary(documents)
+-    return 5 if information_ready else 4
++    return 5 if information_ready and st.session_state.page == "Simulation" else 4
+ 
+ 
+ def render_credit_journey(active_step):
+@@ -822,8 +833,7 @@ def render_guided_document_review(document_id, document, journey_step, advisor_i
+     security = result.get("extraction_security", {})
+     if security.get("suspicious"):
+         st.warning(
+-            "Motifs nécessitant une attention : "
+-            + ", ".join(security.get("matched_patterns", []))
++            "Certaines informations du document demandent une vérification attentive."
+         )
+ 
+     validation_result = result.get("validation_result") or {}
+@@ -832,72 +842,25 @@ def render_guided_document_review(document_id, document, journey_step, advisor_i
+         st.error("Aucune information exploitable n'a été extraite de ce document.")
+         return
+ 
+-    total = len(fields)
+-    reliable = sum(
+-        field.get("status") == "pre_rempli" for field in fields.values()
+-    )
+-    review = sum(field.get("status") == "signale" for field in fields.values())
+-    absent = sum(field.get("status") == "absent" for field in fields.values())
+-    metric_columns = st.columns(4)
+-    metric_columns[0].metric("Champs détectés", total, border=True)
+-    metric_columns[1].metric("Préremplis", reliable, border=True)
+-    metric_columns[2].metric("À vérifier", review, border=True)
+-    metric_columns[3].metric("À compléter", absent, border=True)
+-
+-    if validation_result.get("needs_priority_review"):
+-        st.warning("Certaines informations demandent votre attention.")
+-    else:
+-        st.success("Les informations principales ont été détectées.")
+-
+-    st.subheader("Vérifier et corriger les informations")
+-    confirmations = document.setdefault("confirmed_fields", {})
+-    review_complete = render_document_review(
+-        result,
+-        document["type"],
+-        document_id,
+-        advisor_id,
+-        st.session_state.session_id,
+-        confirmations,
++    confirmations = deepcopy(document.get("confirmed_fields") or {})
++    submitted = render_document_review(
++        result, document["type"], document_id, advisor_id,
++        st.session_state.session_id, confirmations,
+     )
+-    st.session_state.confirmed_fields = confirmations
+-    save_document(st.session_state.current_client_id, document_id, document)
+-
+-    current_type = document.get("type")
+-    next_label = {
+-        "carte_identite": "Continuer vers le bulletin de paie",
+-        "bulletin": "Continuer vers le relevé bancaire",
+-        "releve": "Continuer vers le compromis",
+-        "compromis": "Continuer vers la vérification finale",
+-    }.get(current_type, "Continuer")
+-
+-    st.info(
+-        "Quand vos corrections sont terminées, cliquez sur Continuer pour valider "
+-        "cette étape."
+-    )
+-    if st.button(
+-        next_label,
+-        icon=":material/arrow_forward:",
+-        type="primary",
+-        width="stretch",
+-        disabled=not review_complete,
+-        key=f"guided_continue_{document_id}",
+-    ):
+-        document["journey_reviewed"] = True
+-        save_document(st.session_state.current_client_id, document_id, document)
++    if submitted:
++        updated = dict(document, confirmed_fields=confirmations, journey_reviewed=True)
++        try:
++            save_document(st.session_state.current_client_id, document_id, updated)
++        except Exception:
++            st.error("La sauvegarde a échoué. Vos saisies sont conservées ; réessayez.")
++            return
++        document.update(updated)
+         st.session_state.current_doc_id = None
+         st.session_state.last_result = None
+         st.session_state.confirmed_fields = {}
+-        st.session_state.journey_notice = (
+-            f"{DOCUMENT_JOURNEY[journey_step]['title']} vérifié. "
+-            "Passage à l'étape suivante."
+-        )
++        st.session_state.journey_notice = "Vos informations sont enregistrées."
+         st.rerun()
+ 
+-    with st.expander("Voir le texte OCR"):
+-        st.text(result.get("ocr_text", ""))
+-    with st.expander("Détail du moteur de règles"):
+-        st.json(validation_result.get("rule_engine", {}))
+-
+ 
+ def _remove_uploaded_files(paths):
+     """Supprime uniquement des fichiers situés dans le répertoire d'upload."""
+@@ -1157,7 +1120,7 @@ def dossier_readiness():
+ 
+ 
+ def render_application_sidebar():
+-    """Navigation client inspirée d'un espace bancaire, avec états réels du dossier."""
++    """Navigation bancaire courte, guidée et compréhensible sans jargon."""
+     account_ready = bool(st.session_state.account_created)
+     documents = current_client_documents() if account_ready else {}
+     completed_types = {
+@@ -1185,10 +1148,7 @@ def render_application_sidebar():
+     dossier_complete = False
+     if account_ready:
+         _, _, dossier_complete, _ = dossier_readiness()
+-    journey_step = credit_journey_step(documents) if account_ready else 0
+-    completed_steps = journey_step
+-    if dossier_complete and st.session_state.page == "Simulation":
+-        completed_steps = 6
++    completed_steps = sum((project_ready, documents_ready, dossier_complete, dossier_complete))
+ 
+     logo = Path("assets/logo_ca.jpg")
+     with st.container(key="sidebar_brand"):
+@@ -1203,23 +1163,32 @@ def render_application_sidebar():
+ 
+     with st.container(key="sidebar_intro"):
+         st.markdown("## Crédit Habitat")
+-        st.caption("Votre demande de financement")
++        st.caption("Votre projet, étape par étape")
+ 
+     with st.container(key="sidebar_progress"):
+-        progress_header, progress_value = st.columns([2.5, 1], vertical_alignment="center")
+-        progress_header.markdown("**Avancement du dossier**")
+-        progress_percent = round(completed_steps / 6 * 100)
+-        progress_value.markdown(f"### {progress_percent} %")
+-        st.progress(completed_steps / 6)
+-        st.caption(
+-            f"{completed_steps} étape{'s' if completed_steps != 1 else ''} sur 6 "
+-            f"complétée{'s' if completed_steps != 1 else ''}"
+-        )
++        st.markdown("**Avancement de votre projet**")
++        st.progress(completed_steps / 4)
++        if not account_ready:
++            next_step = "Connectez-vous pour préparer votre dossier."
++        elif not project_ready:
++            next_step = "Prochaine étape : renseigner votre projet."
++        elif not documents_ready:
++            next_step = "Prochaine étape : ajouter vos justificatifs."
++        elif not dossier_complete:
++            next_step = "Prochaine étape : vérifier vos informations."
++        else:
++            next_step = "Votre simulation est prête."
++        st.caption(next_step)
+ 
+-    st.caption("MON DOSSIER")
++    if st.button("Faire une estimation rapide", key="sidebar_quick", width="stretch",
++                 icon=":material/calculate:", type="primary",
++                 disabled=st.session_state.processing):
++        _go_to("Estimation")
++        st.rerun()
++    st.caption("VOTRE PARCOURS")
+     with st.container(key="sidebar_nav"):
+         if st.button(
+-            "Vue d’ensemble",
++            "Accueil",
+             icon=":material/home:",
+             width="stretch",
+             type="primary" if st.session_state.page == "Accueil" else "secondary",
+@@ -1229,79 +1198,61 @@ def render_application_sidebar():
+             _go_to("Accueil")
+             st.rerun()
+ 
+-        info_column, info_status = st.columns([3.3, 1], vertical_alignment="center")
+-        with info_column:
+-            if st.button(
+-                "Mes informations",
+-                icon=":material/person:",
+-                width="stretch",
+-                disabled=st.session_state.processing or not account_ready,
+-                key="sidebar_information",
+-            ):
+-                _go_to("Accueil")
+-                st.rerun()
+-        with info_status:
+-            if account_ready:
+-                st.badge("OK"if project_ready else "À faire",
+-                         color="green" if project_ready else "orange",
+-                )
++        if st.button(
++            "1  Mon projet", icon=":material/home_work:", width="stretch",
++            disabled=st.session_state.processing or not account_ready,
++            key="sidebar_information",
++        ):
++            _go_to("Accueil")
++            st.rerun()
++        st.markdown(
++            f'<div class="sidebar-step-hint">{"Terminé" if project_ready else "À compléter"}</div>',
++            unsafe_allow_html=True,
++        )
+ 
+-        document_column, document_status = st.columns([3.3, 1.35], vertical_alignment="center")
+-        with document_column:
+-            if st.button(
+-                "Mes documents",
+-                icon=":material/description:",
+-                width="stretch",
+-                type="primary" if st.session_state.page == "Extraction" else "secondary",
+-                disabled=st.session_state.processing or not account_ready,
+-                key="sidebar_documents",
+-            ):
+-                _go_to("Extraction")
+-                st.rerun()
+-        with document_status:
+-            if account_ready:
+-                if missing_document_count:
+-                    st.badge(f"{missing_document_count} manq.", color="red")
+-                elif documents_ready:
+-                    st.badge("OK", color="green")
+-                else:
+-                    st.badge("À vér.", color="orange")
++        if st.button(
++            "2  Mes justificatifs", icon=":material/description:", width="stretch",
++            type="primary" if st.session_state.page == "Extraction" else "secondary",
++            disabled=st.session_state.processing or not account_ready,
++            key="sidebar_documents",
++        ):
++            _go_to("Extraction")
++            st.rerun()
++        if missing_document_count:
++            documents_hint = f"{missing_document_count} document{'s' if missing_document_count > 1 else ''} à ajouter"
++        elif documents_ready:
++            documents_hint = "Documents vérifiés"
++        else:
++            documents_hint = "Informations à vérifier"
++        st.markdown(f'<div class="sidebar-step-hint">{documents_hint}</div>', unsafe_allow_html=True)
+ 
+-        verify_column, verify_status = st.columns([3.3, 1], vertical_alignment="center")
+-        with verify_column:
+-            if st.button(
+-                "Vérification",
+-                icon=":material/fact_check:",
+-                width="stretch",
+-                type="primary" if st.session_state.page == "Verification" else "secondary",
+-                disabled=st.session_state.processing or not documents_ready,
+-                key="sidebar_verification",
+-            ):
+-                _go_to("Verification")
+-                st.rerun()
+-        with verify_status:
+-            if account_ready:
+-                st.badge("OK" if dossier_complete else "Bloqué", color="green" if dossier_complete else "gray")
++        if st.button(
++            "3  Vérifier mes informations", icon=":material/fact_check:", width="stretch",
++            type="primary" if st.session_state.page == "Verification" else "secondary",
++            disabled=st.session_state.processing or not documents_ready,
++            key="sidebar_verification",
++        ):
++            _go_to("Verification")
++            st.rerun()
++        verification_hint = "Terminé" if dossier_complete else (
++            "Prêt à vérifier" if documents_ready else "Disponible après les documents"
++        )
++        st.markdown(f'<div class="sidebar-step-hint">{verification_hint}</div>', unsafe_allow_html=True)
+ 
+-        simulation_column, simulation_status = st.columns([3.3, 1], vertical_alignment="center")
+-        with simulation_column:
+-            if st.button(
+-                "Ma simulation",
+-                icon=":material/calculate:",
+-                width="stretch",
+-                type="primary" if st.session_state.page == "Simulation" else "secondary",
+-                disabled=st.session_state.processing or not dossier_complete,
+-                key="sidebar_simulation",
+-            ):
+-                _go_to("Simulation")
+-                st.rerun()
+-        with simulation_status:
+-            if account_ready:        
+-                st.badge("Prête" if dossier_complete else "Bloquée", color="green" if dossier_complete else "gray")
++        if st.button(
++            "4  Voir ma simulation", icon=":material/calculate:", width="stretch",
++            type="primary" if st.session_state.page == "Simulation" else "secondary",
++            disabled=st.session_state.processing or not dossier_complete,
++            key="sidebar_simulation",
++        ):
++            _go_to("Simulation")
++            st.rerun()
++        simulation_hint = "Disponible" if dossier_complete else "Disponible après vérification"
++        st.markdown(f'<div class="sidebar-step-hint">{simulation_hint}</div>', unsafe_allow_html=True)
+ 
+     with st.container(key="sidebar_support"):
+         if st.button(
+-            "Besoin d’aide ?",
++            "Une question ? Demandez à Nour",
+             icon=":material/help:",
+             width="stretch",
+             key="sidebar_help",
+@@ -1417,7 +1368,7 @@ def render_assistant_dock(advisor_id):
+ 
+         with st.spinner("Nour prépare votre réponse…"):
+             try:
+-                answer = orchestrator.handle_question(
++                answer = get_orchestrator().handle_question(
+                     question=question,
+                     advisor_id=advisor_id,
+                     session_id=st.session_state.session_id,
+@@ -1579,7 +1530,7 @@ def process_document_with_progress(file_path, document_type, declared_data, advi
+         st.write("Lecture OCR, extraction et vérifications. Le délai dépend du nombre de pages.")
+         st.caption("Patientez sans relancer l'analyse ; les résultats apparaîtront à la fin.")
+         try:
+-            result = orchestrator.handle_document(
++            result = get_orchestrator().handle_document(
+                 pdf_path=str(file_path), document_type=document_type,
+                 advisor_id=advisor_id, session_id=session_id, declared_data=declared_data,
+             )
+@@ -1612,7 +1563,6 @@ def get_document_summary(doc_data):
+ UPLOAD_DIR = Path("data/uploads")
+ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+ 
+-orchestrator = get_orchestrator()
+ 
+ # =========================================================
+ # SESSION STATE - INITIALISATION AMÉLIORÉE
+@@ -1707,7 +1657,7 @@ if st.session_state.page == "Accueil":
+                 <div class="ca-eyebrow">ÉTAPE 1 · ESPACE CLIENT</div>
+                 <h1>Commençons votre projet habitat.</h1>
+                 <p>Créez votre espace personnel pour sauvegarder vos justificatifs,
+-                reprendre votre parcours et accéder à votre simulation.</p>
++                reprendre votre parcours et affiner votre simulation.</p>
+             </section>
+             """,
+             unsafe_allow_html=True,
+@@ -1768,7 +1718,6 @@ if st.session_state.page == "Accueil":
+                             st.session_state.documents = load_documents(customer["id"])
+                             st.session_state.account_created = True
+                             st.rerun()
+-        st.caption("Vos identifiants sont enregistrés localement ; le mot de passe n'est jamais stocké en clair.")
+         st.stop()
+ 
+     client_badge = '<span class="ca-tag">SIMULATION PERSONNELLE ET NON CONTRACTUELLE</span>'
+@@ -1785,8 +1734,8 @@ if st.session_state.page == "Accueil":
+         unsafe_allow_html=True,
+     )
+ 
+-    saved_project = load_project(st.session_state.current_client_id) or {}
+-    with st.expander("Personnaliser mon projet habitat", expanded=not bool(saved_project)):
++    saved_project = load_project(st.session_state.current_client_id) or st.session_state.get("quick_project", {})
++    with st.expander("Personnaliser mon projet habitat", expanded=False):
+         with st.form("housing_project_profile"):
+             project_left, project_right = st.columns(2)
+             city = project_left.text_input("Ville du projet", value=saved_project.get("city") or "")
+@@ -1802,7 +1751,7 @@ if st.session_state.page == "Accueil":
+             )
+             contribution = project_right.number_input(
+                 "Apport personnel (MAD)", min_value=0.0,
+-                value=float(saved_project.get("contribution") or 100000), step=5000.0,
++                value=float(saved_project.get("contribution", 100000)), step=5000.0,
+             )
+             duration_years = st.slider(
+                 "Durée souhaitée", 5, 30, int(saved_project.get("duration_years") or 20),
+@@ -1818,33 +1767,38 @@ if st.session_state.page == "Accueil":
+                     )
+                     st.success("Votre projet est enregistré dans votre compte.")
+ 
+-    action_left, action_right = st.columns([1.15, 0.85], gap="large")
+-    with action_left.container(border=True, height="stretch"):
+-        st.markdown("### Une offre adaptée à votre projet")
+-        st.write("Estimez un financement pour l'acquisition de votre logement, avec une durée et une mensualité adaptées à votre situation.")
+-        st.caption("Pièce d'identité · Bulletin de paie · Relevé de compte · Compromis")
+-        if st.button(
+-            "Simuler mon crédit habitat",
+-            icon=":material/arrow_forward:",
+-            type="primary",
+-            width="stretch",
+-            disabled=st.session_state.processing,
+-        ):
+-            st.session_state.page = "Extraction"
+-            st.rerun()
++    action_left, action_right = st.columns(2, gap="large")
++    with action_left:
++        with st.container(key="home_offer_card", border=True, height="stretch"):
++            st.markdown("### Préparer mon dossier")
++            st.write(
++                "Ajoutez vos justificatifs pour obtenir une simulation basée sur "
++                "votre situation personnelle."
++            )
++            st.caption("Carte d’identité · Bulletin de paie · Relevé bancaire")
++            if st.button(
++                "Commencer avec mes documents",
++                icon=":material/arrow_forward:", type="primary", width="stretch",
++                disabled=st.session_state.processing, key="home_start_documents",
++            ):
++                st.session_state.page = "Extraction"
++                st.rerun()
+ 
+-    with action_right.container(border=True, height="stretch"):
+-        st.markdown("### Comprendre le crédit habitat")
+-        st.write("Posez vos questions sur les offres, les étapes et les documents nécessaires.")
+-        st.caption("Réponses contextualisées avec sources documentaires")
+-        if st.button(
+-            "Poser une question",
+-            icon=":material/chat:",
+-            width="stretch",
+-            disabled=st.session_state.processing,
+-        ):
+-            st.session_state.assistant_open = True
+-            st.rerun()
++    with action_right:
++        with st.container(key="home_estimate_card", border=True, height="stretch"):
++            st.markdown("### Estimer ma mensualité")
++            st.write(
++                "Obtenez immédiatement une première estimation à partir du prix, "
++                "de votre apport et de la durée souhaitée."
++            )
++            st.caption("Rapide · Sans justificatif · Sans engagement")
++            if st.button(
++                "Faire une estimation rapide",
++                icon=":material/calculate:", type="primary", width="stretch",
++                disabled=st.session_state.processing, key="home_quick",
++            ):
++                st.session_state.page = "Estimation"
++                st.rerun()
+ 
+     st.markdown('<div class="ca-section-title">À découvrir</div>', unsafe_allow_html=True)
+     st.caption("Des repères simples pour mieux comprendre le parcours et préparer le projet immobilier.")
+@@ -1871,6 +1825,22 @@ if st.session_state.page == "Accueil":
+             "TRANSPARENCE",
+         )
+ 
++    with st.container(key="home_help_banner", border=True):
++        help_text, help_action = st.columns([3.4, 1], vertical_alignment="center")
++        with help_text:
++            st.markdown("### Une question sur votre crédit habitat ?")
++            st.caption(
++                "Nour vous explique les documents, les étapes et les conditions "
++                "à partir de la documentation disponible."
++            )
++        with help_action:
++            if st.button(
++                "Poser une question", icon=":material/chat:",
++                width="stretch", key="home_ask_question",
++            ):
++                st.session_state.assistant_open = True
++                st.rerun()
++
+     st.markdown('<div class="ca-section-title">Activité de la session</div>', unsafe_allow_html=True)
+     docs = st.session_state.documents
+     cols = st.columns(3)
+@@ -1921,6 +1891,7 @@ elif st.session_state.page == "Extraction":
+     }
+ 
+     journey_step = credit_journey_step(client_docs)
++    _, _, dossier_complete, _ = dossier_readiness()
+ 
+     # Si le document de l'étape a déjà été analysé, le sélectionner afin que
+     # l'utilisateur puisse relire et corriger ses champs avant de continuer.
+@@ -1929,7 +1900,7 @@ elif st.session_state.page == "Extraction":
+         selected_document = st.session_state.documents.get(
+             st.session_state.current_doc_id
+         )
+-        if not selected_document or selected_document.get("type") != active_document_type:
++        if not selected_document:
+             matching_documents = [
+                 (document_id, document)
+                 for document_id, document in client_docs.items()
+@@ -1948,122 +1919,117 @@ elif st.session_state.page == "Extraction":
+                     "confirmed_fields", {}
+                 )
+ 
+-    render_credit_journey(journey_step)
++    # Un dossier finalisé reste entièrement consultable depuis « Mes documents ».
++    # L'étape 6 sert uniquement à afficher toutes les coches dans ce cas.
++    render_credit_journey(6 if dossier_complete else journey_step)
+     st.divider()
+     
+-    if client_docs:
+-        st.subheader("Mes documents")
+-        
+-        # Afficher les documents dans une grille
+-        cols = st.columns(2)
+-        for idx, (doc_id, doc_data) in enumerate(client_docs.items()):
+-            col = cols[idx % 2]
+-            with col:
+-                is_active = doc_id == st.session_state.current_doc_id
+-                status = doc_data.get('status', 'inconnu')
+-                
+-                # Couleur selon le statut
+-                status_color = {
+-                    'completed': '✅',
+-                    'processing': '⏳',
+-                    'error': '❌',
+-                    'inconnu': '⏸️'
+-                }.get(status, '⏸️')
+-                
+-                status_text = {
+-                    'completed': 'Traité',
+-                    'processing': 'En cours...',
+-                    'error': 'Erreur',
+-                    'inconnu': 'En attente'
+-                }.get(status, 'En attente')
+-                
+-                with st.container(border=True):
+-                    col_btn, col_status = st.columns([3, 1])
+-                    with col_btn:
++    with st.expander("Voir et modifier mes documents", expanded=dossier_complete):
++        if client_docs:
++
++            # Afficher les documents dans une grille
++            cols = st.columns(2)
++            for idx, (doc_id, doc_data) in enumerate(client_docs.items()):
++                col = cols[idx % 2]
++                with col:
++                    is_active = doc_id == st.session_state.current_doc_id
++                    status = doc_data.get('status', 'inconnu')
++
++                    # Couleur selon le statut
++                    status_color = {
++                        'completed': '✅',
++                        'processing': '⏳',
++                        'error': '❌',
++                        'inconnu': '⏸️'
++                    }.get(status, '⏸️')
++
++                    status_text = {
++                        'completed': 'Traité',
++                        'processing': 'En cours...',
++                        'error': 'Erreur',
++                        'inconnu': 'En attente'
++                    }.get(status, 'En attente')
++
++                    with st.container(border=True):
++                        col_btn, col_status = st.columns([3, 1])
++                        with col_btn:
++                            if st.button(
++                                f"📄 {doc_data.get('filename', 'Document')[:30]}...",
++                                key=f"view_{doc_id}",
++                                width="stretch",
++                            ):
++                                st.session_state.current_doc_id = doc_id
++                                st.session_state.last_result = doc_data.get('result')
++                                st.session_state.confirmed_fields = doc_data.get('confirmed_fields', {})
++                                st.rerun()
++                        with col_status:
++                            st.caption(f"{status_color} {status_text}")
++
++                        # Infos supplémentaires
++                        st.caption(f"Type: {doc_data.get('type', 'Inconnu')}")
++                        if doc_data.get('timestamp'):
++                            st.caption(f"📅 {doc_data.get('timestamp')[:16]}")
+                         if st.button(
+-                            f"📄 {doc_data.get('filename', 'Document')[:30]}...",
+-                            key=f"view_{doc_id}",
++                            "Supprimer ce justificatif",
++                            icon=":material/delete:",
++                            key=f"delete_card_{doc_id}",
+                             width="stretch",
+                         ):
+-                            st.session_state.current_doc_id = doc_id
+-                            st.session_state.last_result = doc_data.get('result')
+-                            st.session_state.confirmed_fields = doc_data.get('confirmed_fields', {})
+-                            st.rerun()
+-                    with col_status:
+-                        st.caption(f"{status_color} {status_text}")
+-                    
+-                    # Infos supplémentaires
+-                    st.caption(f"Type: {doc_data.get('type', 'Inconnu')}")
+-                    if doc_data.get('timestamp'):
+-                        st.caption(f"📅 {doc_data.get('timestamp')[:16]}")
+-                    if st.button(
+-                        "Supprimer ce justificatif",
+-                        icon=":material/delete:",
+-                        key=f"delete_card_{doc_id}",
+-                        width="stretch",
+-                    ):
+-                        delete_one_document_dialog(doc_id)
+-                
+-                st.write("")  # Espacement
++                            delete_one_document_dialog(doc_id)
+ 
+-        documents_ready = required_documents_ready(client_docs)
+-        if not documents_ready:
+-            completed_types = {
+-                document.get("type") for document in client_docs.values()
+-                if document.get("status") == "completed"
+-            }
+-            missing_documents = []
+-            if "carte_identite" not in completed_types:
+-                missing_documents.append("une carte d'identité")
+-            if "bulletin" not in completed_types:
+-                missing_documents.append("un bulletin de paie")
+-            if "releve" not in completed_types:
+-                missing_documents.append("un relevé bancaire")
+-            st.info("Ajoutez " + " et ".join(missing_documents) + " pour passer à la vérification.")
++                    st.write("")  # Espacement
+ 
+-        if st.button(
+-            "Recommencer avec de nouveaux justificatifs",
+-            icon=":material/delete_sweep:",
+-            key="reset_all_documents",
+-        ):
+-            reset_documents_dialog()
+-        
+-        st.divider()
++            if st.button(
++                "Recommencer avec de nouveaux justificatifs",
++                icon=":material/delete_sweep:",
++                key="reset_all_documents",
++            ):
++                reset_documents_dialog()
++
++            st.divider()
+ 
+-    if journey_step == 4:
+-        st.subheader("Étape 5 — Vérifier mes informations")
++    selected = st.session_state.documents.get(st.session_state.current_doc_id)
++    if selected and selected.get("status") == "completed" and selected.get("result"):
++        render_guided_document_review(st.session_state.current_doc_id, selected, journey_step, advisor_id)
++        st.stop()
++
++    if journey_step >= 4:
+         st.success(
+-            "Les documents nécessaires sont prêts. Vérifiez maintenant les cinq "
+-            "informations utilisées par la simulation."
++            "Vos justificatifs sont enregistrés. Cliquez sur un document ci-dessus "
++            "pour revoir ou corriger ses informations."
+         )
+-        if st.session_state.get("compromis_skipped", False):
+-            st.caption(
+-                "Le compromis a été ignoré pour le moment. Vous pourrez l'ajouter "
+-                "ultérieurement si nécessaire."
+-            )
+-        if st.button(
+-            "Vérifier mes 5 informations",
+-            icon=":material/fact_check:",
+-            type="primary",
+-            width="stretch",
+-            key="journey_open_verification",
+-        ):
+-            st.session_state.page = "Verification"
+-            st.rerun()
+-        st.stop()
++        action_left, action_right = st.columns(2)
++        with action_left:
++            if st.button(
++                "Revoir mes informations",
++                icon=":material/fact_check:",
++                width="stretch",
++                key="documents_open_verification",
++            ):
++                st.session_state.page = "Verification"
++                st.rerun()
++        with action_right:
++            if dossier_complete and st.button(
++                "Retourner à ma simulation",
++                icon=":material/calculate:",
++                type="primary",
++                width="stretch",
++                key="documents_open_simulation",
++            ):
++                st.session_state.page = "Simulation"
++                st.rerun()
+ 
+-    if journey_step == 5:
+-        st.subheader("Étape 6 — Accéder à ma simulation")
+-        st.success("Vos cinq informations sont vérifiées. Votre simulation est prête.")
+-        if st.button(
+-            "Voir ma simulation",
+-            icon=":material/calculate:",
+-            type="primary",
+-            width="stretch",
+-            key="journey_open_simulation",
+-        ):
+-            st.session_state.page = "Simulation"
+-            st.rerun()
++        if st.session_state.get("compromis_skipped", False):
++            if st.button(
++                "Ajouter mon compromis de vente",
++                icon=":material/upload_file:",
++                width="stretch",
++                key="documents_add_compromis",
++            ):
++                st.session_state.compromis_skipped = False
++                st.session_state.current_doc_id = None
++                st.session_state.last_result = None
++                st.rerun()
+         st.stop()
+ 
+     document_step = DOCUMENT_JOURNEY[journey_step]
+@@ -2072,22 +2038,6 @@ elif st.session_state.page == "Extraction":
+     st.subheader(f"Étape {journey_step + 1} — {document_step['title']}")
+     st.write(document_step["instruction"])
+ 
+-    active_document_id = st.session_state.current_doc_id
+-    active_document = st.session_state.documents.get(active_document_id)
+-    if (
+-        active_document
+-        and active_document.get("type") == document_type
+-        and active_document.get("status") == "completed"
+-        and active_document.get("result")
+-    ):
+-        render_guided_document_review(
+-            active_document_id,
+-            active_document,
+-            journey_step,
+-            advisor_id,
+-        )
+-        st.stop()
+-
+     if document_step["optional"]:
+         st.info(
+             "Cette étape est facultative. Vous pouvez continuer même si vous "
+@@ -2108,9 +2058,8 @@ elif st.session_state.page == "Extraction":
+     # AJOUTER UN NOUVEAU DOCUMENT
+     # -----------------------------------------------------
+     
+-    col_upload, col_data = st.columns([1.1, 0.9], gap="large")
+-    
+-    with col_upload:
++    declared_data = {}
++    with st.container():
+         is_identity = document_type == "carte_identite"
+         identity_mode = None
+ 
+@@ -2207,12 +2156,6 @@ elif st.session_state.page == "Extraction":
+                     st.success(f"✅ {label} : {selected_file.name}")
+                 st.caption(f"📦 Taille totale : {total_size / 1024:.1f} KB")
+     
+-    with col_data:
+-        st.subheader("Informations connues (facultatif)")
+-        st.caption("Vous pouvez laisser cette partie vide : le document sera analysé automatiquement.")
+-        with st.expander("Comparer avec les informations que je connais"):
+-            declared_data = render_declared_form(document_type, st.session_state.current_client_id)
+-    
+     # -----------------------------------------------------
+     # ERREUR PERSISTEE (affichée après un st.rerun() suite à un échec)
+     # -----------------------------------------------------
+@@ -2227,10 +2170,9 @@ elif st.session_state.page == "Extraction":
+         st.divider()
+ 
+     # Boutons d'action
+-    col_buttons = st.columns([1, 1])
+-    with col_buttons[0]:
++    with st.container():
+         st.button(
+-            "Analyser et continuer",
++            "Lire mon document",
+             icon=":material/arrow_forward:",
+             type="primary",
+             width="stretch",
+@@ -2238,13 +2180,6 @@ elif st.session_state.page == "Extraction":
+             key="launch_document_analysis",
+             on_click=request_document_analysis,
+         )
+-    with col_buttons[1]:
+-        if st.button("🔄 Réinitialiser l'affichage", width="stretch", disabled=st.session_state.processing):
+-            st.session_state.current_doc_id = None
+-            st.session_state.last_result = None
+-            st.session_state.confirmed_fields = {}
+-            st.rerun()
+-    
+     # -----------------------------------------------------
+     # EXECUTION AMÉLIORÉE
+     # -----------------------------------------------------
+@@ -2341,144 +2276,6 @@ elif st.session_state.page == "Extraction":
+             st.rerun()
+     
+     # -----------------------------------------------------
+-    # RESULTATS DU DOCUMENT SÉLECTIONNÉ
+-    # -----------------------------------------------------
+-    
+-    # Si un document est sélectionné, afficher ses résultats
+-    if st.session_state.current_doc_id and st.session_state.last_result:
+-        current_doc = st.session_state.documents.get(st.session_state.current_doc_id)
+-        
+-        if current_doc:
+-            st.divider()
+-            
+-            # En-tête du document
+-            st.subheader(f"Informations détectées — {current_doc.get('filename', 'Document')}")
+-            st.caption(f"Type: {current_doc.get('type', 'Inconnu')} | {current_doc.get('timestamp', '')[:16]}")
+-            
+-            result = st.session_state.last_result
+-            control_result = result.get("control_result", {})
+-            
+-            if not control_result.get("valid", False):
+-                st.error(f"🚫 Document rejeté : {control_result.get('reason', 'Raison inconnue')}")
+-            else:
+-                security = result.get("extraction_security", {})
+-                
+-                if security.get("suspicious"):
+-                    st.warning(
+-                        "⚠️ Motifs nécessitant une attention : "
+-                        f"{', '.join(security.get('matched_patterns', []))}"
+-                    )
+-                
+-                validation_result = result.get("validation_result")
+-                
+-                if validation_result:
+-                    fields = validation_result["fields"]
+-                    
+-                    total = len(fields)
+-                    reliable = sum(1 for field in fields.values() if field["status"] == "pre_rempli")
+-                    review = sum(1 for field in fields.values() if field["status"] == "signale")
+-                    absent = sum(1 for field in fields.values() if field["status"] == "absent")
+-                    
+-                    # Métriques
+-                    col_1, col_2, col_3, col_4 = st.columns(4)
+-                    
+-                    metrics = [
+-                        (col_1, "📊 Champs détectés", total),
+-                        (col_2, "Déjà renseignés", reliable),
+-                        (col_3, "À vérifier", review),
+-                        (col_4, "À compléter", absent),
+-                    ]
+-                    
+-                    for column, label, value in metrics:
+-                        with column:
+-                            st.metric(label, value, border=True)
+-
+-                    st.write("")
+-                    
+-                    if validation_result["needs_priority_review"]:
+-                        st.warning("Certaines informations demandent votre attention avant de continuer.")
+-                    else:
+-                        st.success("Les informations principales ont été détectées.")
+-                    
+-                    st.subheader("Vérifier les informations extraites")
+-                    st.caption(
+-                        "Corrigez les valeurs si nécessaire et confirmez celles que "
+-                        "vous souhaitez conserver avant de passer à la suite."
+-                    )
+-                    confirmations = current_doc.setdefault("confirmed_fields", {})
+-                    render_document_review(
+-                        result, current_doc["type"], st.session_state.current_doc_id,
+-                        advisor_id, st.session_state.session_id, confirmations,
+-                    )
+-                    st.session_state.confirmed_fields = confirmations
+-                    save_document(
+-                        st.session_state.current_client_id,
+-                        st.session_state.current_doc_id,
+-                        current_doc,
+-                    )
+-
+-                    active_type = (
+-                        DOCUMENT_JOURNEY[journey_step]["type"]
+-                        if journey_step < len(DOCUMENT_JOURNEY)
+-                        else None
+-                    )
+-                    current_type = current_doc.get("type")
+-                    is_active_document = current_type == active_type
+-                    next_label = {
+-                        "carte_identite": "Continuer vers le bulletin de paie",
+-                        "bulletin": "Continuer vers le relevé bancaire",
+-                        "releve": "Continuer vers le compromis",
+-                        "compromis": "Continuer vers la vérification finale",
+-                    }.get(current_type, "Continuer")
+-
+-                    if not is_active_document:
+-                        st.info(
+-                            "Vous consultez un ancien document. Revenez au document "
+-                            "de l'étape actuelle pour poursuivre le parcours."
+-                        )
+-                    if st.button(
+-                        next_label,
+-                        icon=":material/arrow_forward:",
+-                        type="primary",
+-                        width="stretch",
+-                        disabled=not is_active_document,
+-                        key=f"continue_journey_{st.session_state.current_doc_id}",
+-                    ):
+-                        current_doc["journey_reviewed"] = True
+-                        save_document(
+-                            st.session_state.current_client_id,
+-                            st.session_state.current_doc_id,
+-                            current_doc,
+-                        )
+-                        st.session_state.current_doc_id = None
+-                        st.session_state.last_result = None
+-                        st.session_state.confirmed_fields = {}
+-                        st.session_state.journey_notice = (
+-                            f"{DOCUMENT_JOURNEY[journey_step]['title']} vérifié. "
+-                            "Passage à l'étape suivante."
+-                        )
+-                        st.rerun()
+-                    
+-                    # Sections détaillées
+-                    with st.expander("📄 Voir le texte OCR"):
+-                        st.text(result.get("ocr_text", ""))
+-                    
+-                    with st.expander("⚙️ Détail du moteur de règles"):
+-                        st.json(validation_result["rule_engine"])
+-                    
+-                    with st.expander("📊 Détail des écarts"):
+-                        st.json(validation_result["discrepancies"])
+-                    
+-                    # Bouton pour supprimer le document
+-                    if st.button(
+-                        "Supprimer ce justificatif",
+-                        icon=":material/delete:",
+-                        width="stretch",
+-                        key=f"delete_selected_{st.session_state.current_doc_id}",
+-                    ):
+-                        delete_one_document_dialog(st.session_state.current_doc_id)
+-
+-# =========================================================
+ # PAGE VÉRIFICATION DES INFORMATIONS ESSENTIELLES
+ # =========================================================
+ 
+@@ -2505,8 +2302,8 @@ elif st.session_state.page == "Verification":
+ 
+     st.title("Vérifier mes informations")
+     st.caption(
+-        "Corrigez si nécessaire les cinq informations utilisées pour calculer votre "
+-        "simulation, puis confirmez-les en une seule fois."
++        "Retrouvez vos informations déjà corrigées. Vous pouvez les modifier avant votre "
++        "simulation."
+     )
+     render_final_verification(
+         client_docs,
+@@ -2522,99 +2319,39 @@ elif st.session_state.page == "Verification":
+ # PAGE SIMULATION CLIENT
+ # =========================================================
+ 
++elif st.session_state.page == "Estimation":
++    st.title("Estimer ma mensualité")
++    st.caption("Aucun compte ni justificatif nécessaire pour cette première estimation.")
++    estimate = render_simulation(key_prefix="quick")
++    if st.button("Affiner avec mes documents", type="primary", key="quick_refine"):
++        if estimate:
++            st.session_state.quick_project = estimate
++        st.session_state.page = "Extraction" if st.session_state.account_created else "Accueil"
++        st.rerun()
++
+ elif st.session_state.page == "Simulation":
+-    client_docs, readiness_rows, dossier_complete, missing_for_simulation = dossier_readiness()
+     if not st.session_state.account_created:
+-        st.session_state.page = "Accueil"
++        st.session_state.page = "Estimation"
+         st.rerun()
++    client_docs, _, dossier_complete, _ = dossier_readiness()
+     if not dossier_complete:
+-        st.title("Votre simulation n'est pas encore disponible")
+-        st.warning(
+-            "Vérifiez d'abord les informations indispensables : "
+-            + ", ".join(missing_for_simulation or ["revenu, ancienneté et charges en cours"])
+-        )
+-        if st.button("Vérifier mes informations", type="primary", width="stretch"):
+-            st.session_state.page = "Verification"
+-            st.rerun()
+-        st.stop()
++        st.session_state.page = "Verification"
++        st.rerun()
+     st.title("Ma simulation de crédit habitat")
+-    st.caption("Modifiez les hypothèses pour obtenir une estimation immédiate et non contractuelle.")
+-
+-    if client_docs:
+-        render_client_summary(client_docs)
+-    else:
+-        st.info("Vous pouvez simuler dès maintenant, puis ajouter vos justificatifs pour compléter l'analyse.")
+-
+-    with st.container(border=True):
+-        st.markdown("### Mon projet")
+-        saved_project = load_project(st.session_state.current_client_id) or {}
+-        project_left, project_right = st.columns(2)
+-        with project_left:
+-            property_value = st.number_input(
+-                "Prix du bien (MAD)", min_value=0.0,
+-                value=float(saved_project.get("purchase_price") or 600000),
+-                step=10000.0, format="%.2f", key="simulation_property_value",
+-            )
+-            contribution = st.number_input(
+-                "Mon apport personnel (MAD)", min_value=0.0,
+-                value=float(saved_project.get("contribution") or 100000),
+-                step=5000.0, format="%.2f", key="simulation_contribution",
+-            )
+-        with project_right:
+-            duration_years = st.slider(
+-                "Durée souhaitée", min_value=5, max_value=30,
+-                value=int(saved_project.get("duration_years") or 20),
+-                format="%d ans", key="simulation_duration",
+-            )
+-            annual_rate = st.number_input(
+-                "Taux annuel indicatif (%)", min_value=0.0, max_value=20.0,
+-                value=4.50, step=0.05, format="%.2f", key="simulation_rate",
+-                help="Saisissez un taux indicatif. Le taux définitif dépendra de l'offre de la banque.",
+-            )
+-
+-    financed_amount = max(property_value - contribution, 0.0)
+-    months = duration_years * 12
+-    monthly_rate = annual_rate / 1200
+-    if financed_amount == 0:
+-        monthly_payment = total_cost = 0.0
+-    elif monthly_rate == 0:
+-        monthly_payment = financed_amount / months
+-        total_cost = 0.0
+-    else:
+-        monthly_payment = financed_amount * monthly_rate / (1 - math.pow(1 + monthly_rate, -months))
+-        total_cost = monthly_payment * months - financed_amount
+-
+-    result_1, result_2, result_3 = st.columns(3)
+-    result_1.metric("Montant à financer", f"{financed_amount:,.2f} MAD", border=True)
+-    result_2.metric("Mensualité estimée", f"{monthly_payment:,.2f} MAD", border=True)
+-    result_3.metric("Coût estimé des intérêts", f"{total_cost:,.2f} MAD", border=True)
+-
+-    if client_docs:
+-        rows, _ = build_client_summary(client_docs)
+-        confirmed = {
+-            row["field"]: row["Valeur confirmée"]
+-            for row in rows if row["Statut"] == "Confirmé"
+-        }
+-        salary_income = confirmed.get("salaire_net")
+-        additional_income = confirmed.get("revenus_complementaires")
+-        current_charges = confirmed.get("charge_mensuelle_credits")
+-        if salary_income is not None and additional_income is not None and current_charges is not None:
+-            income = float(salary_income) + float(additional_income)
+-            projected_ratio = ((float(current_charges) + monthly_payment) / income
+-                               if income > 0 else 0.0)
+-            st.metric("Taux d'endettement projeté", f"{projected_ratio:.2%}", border=True)
+-            st.caption(
+-                "Calcul indicatif : (charges actuelles + mensualité estimée) ÷ "
+-                "(revenu net + revenus complémentaires vérifiés)."
+-            )
+-        else:
+-            st.info("Vérifiez votre bulletin de paie et votre relevé pour afficher le taux d'endettement projeté.")
+-
+-    st.warning(
+-        "Cette simulation est informative. Elle ne constitue ni une offre, ni un accord de crédit. "
+-        "Le taux, l'assurance, les frais et l'acceptation dépendent de l'étude complète par la banque."
+-    )
+-
++    saved_project = load_project(st.session_state.current_client_id) or st.session_state.get("quick_project", {})
++    estimate = render_simulation(saved_project, key_prefix=f"simulation_{st.session_state.current_client_id}")
++    rows, _ = build_client_summary(client_docs)
++    confirmed = {row["field"]: row["Valeur confirmée"] for row in rows if row["Statut"] == "Confirmé"}
++    income = float(confirmed["salaire_net"]) + float(confirmed["revenus_complementaires"])
++    if estimate and income > 0:
++        ratio = (float(confirmed["charge_mensuelle_credits"]) + estimate["monthly_payment"]) / income
++        st.metric("Taux d'endettement estimé", f"{ratio:.2%}")
++    with st.expander("Ma situation vérifiée"):
++        for row in rows:
++            st.write(f"{row['Champ']} : {row['Valeur confirmée']}")
++    if st.button("Modifier ma situation", key="simulation_edit"):
++        st.session_state.page = "Verification"
++        st.rerun()
+ 
+ # =========================================================
+ # PAGE ASSISTANT AMÉLIORÉE
+@@ -2712,7 +2449,7 @@ elif st.session_state.page == "Assistant":
+         with st.chat_message("assistant"):
+             with st.spinner("🔍 Recherche dans la documentation..."):
+                 try:
+-                    chat_result = orchestrator.handle_question(
++                    chat_result = get_orchestrator().handle_question(
+                         question=question,
+                         advisor_id=advisor_id,
+                         session_id=st.session_state.session_id,
+@@ -2756,11 +2493,7 @@ elif st.session_state.page == "Assistant":
+ # =========================================================
+ 
+ st.divider()
+-st.caption(
+-    f"🏦 Crédit Agricole du Maroc — PFE 2026 | "
+-    f"Session : {st.session_state.session_id[:8]} | "
+-    f"v1.3.0 | Documents : {len(st.session_state.documents)}"
+-)
++st.caption("Crédit Agricole du Maroc — Assistant Crédit Habitat")
+ 
+ # =========================================================
+ # GESTION DES ERREURS GLOBALES
+diff --git a/database/customer_accounts.py b/database/customer_accounts.py
+index c2b058b..c9306e8 100644
+--- a/database/customer_accounts.py
++++ b/database/customer_accounts.py
+@@ -68,6 +68,10 @@ def init_database():
+             """
+         )
+ 
++        columns = {row[1] for row in connection.execute("PRAGMA table_info(customer_documents)")}
++        if "journey_reviewed" not in columns:
++            connection.execute("ALTER TABLE customer_documents ADD COLUMN journey_reviewed INTEGER NOT NULL DEFAULT 0")
++
+ 
+ def _normalize_email(email):
+     return str(email or "").strip().casefold()
+@@ -164,15 +168,15 @@ def save_document(customer_id, document_id, document):
+         connection.execute(
+             """INSERT INTO customer_documents
+                (document_id,customer_id,document_type,filename,document_path,status,
+-                result_json,confirmed_json,created_at,updated_at)
+-               VALUES (?,?,?,?,?,?,?,?,?,?)
++                result_json,confirmed_json,created_at,updated_at,journey_reviewed)
++               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                status=excluded.status, result_json=excluded.result_json,
+                confirmed_json=excluded.confirmed_json, document_path=excluded.document_path,
+-               updated_at=excluded.updated_at""",
++               updated_at=excluded.updated_at, journey_reviewed=excluded.journey_reviewed""",
+             (document_id, customer_id, document.get("type"), document.get("filename") or "Document",
+              document.get("document_path"), document.get("status") or "processing", payload,
+-             confirmed, document.get("timestamp") or now, now),
++             confirmed, document.get("timestamp") or now, now, int(document.get("journey_reviewed") is True)),
+         )
+ 
+ 
+@@ -189,7 +193,7 @@ def load_documents(customer_id):
+             "filename": row["filename"], "document_path": row["document_path"],
+             "status": row["status"], "result": json.loads(row["result_json"] or "null"),
+             "confirmed_fields": json.loads(row["confirmed_json"] or "{}"),
+-            "timestamp": row["created_at"],
++            "timestamp": row["created_at"], "journey_reviewed": bool(row["journey_reviewed"]),
+         }
+     return documents
+ 
+diff --git a/tests/test_review_ui.py b/tests/test_review_ui.py
+index b6c1735..7e87760 100644
+--- a/tests/test_review_ui.py
++++ b/tests/test_review_ui.py
+@@ -1,57 +1,71 @@
+ import csv
+ import io
++from pathlib import Path
+ from types import SimpleNamespace
+ 
++import pytest
+ from streamlit.testing.v1 import AppTest
+ 
+-
++ROOT = Path(__file__).parents[1]
+ REVIEW_APP = '''
+ import streamlit as st
+ from ui.document_review import render_document_review
+ from extraction.confirmation import export_confirmed_csv
+ st.session_state.setdefault("confirmations", {})
+ result = {"validation_result": {"fields": {
+-    "salaire_net": {"value": 6000.0, "confidence": 0.9, "reasons": [],
+-        "source": {"document": "fictif.pdf", "page": 2, "quote": "Net 6000", "verified": True}}
++    "employeur": {"value": "Entreprise fictive"},
++    "date_embauche": {"value": "2020-01-01"},
++    "salaire_net": {"value": 6000.0, "source": {"document": "fictif.pdf", "page": 2}}
+ }}}
+-render_document_review(result, "bulletin", "A", "test", "session", st.session_state.confirmations)
++st.session_state.submitted = render_document_review(result, "bulletin", "A", "test", "session", st.session_state.confirmations)
+ st.session_state.csv_result = export_confirmed_csv(result, "bulletin", st.session_state.confirmations, "A")
+ '''
+ 
+ 
+-def test_edit_confirm_reopen_and_export(tmp_path, monkeypatch):
+-    from database import audit
++@pytest.fixture
++def isolated_db(tmp_path, monkeypatch):
++    from database import audit, customer_accounts as accounts
+     monkeypatch.setattr(audit, "settings", SimpleNamespace(database_path=tmp_path / "audit.db"))
++    monkeypatch.setattr(accounts, "DB_PATH", tmp_path / "clients.db")
+     audit.init_audit_table()
+-    app = AppTest.from_string(REVIEW_APP).run()
+-    assert not app.exception
+-    assert app.session_state.csv_result is None
+-    app.number_input[0].set_value(6500.0).run()
+-    app.checkbox[0].check().run()
+-    app.button(key="confirm_salaire_net_A").click().run()
++    accounts.init_database()
++    return accounts
++
++
++def submit(app, label="Valider et continuer"):
++    next(button for button in app.button if button.label == label).click().run()
+     assert not app.exception
++
++
++def test_one_click_corrects_and_exports(isolated_db):
++    app = AppTest.from_string(REVIEW_APP).run()
++    assert not app.exception and not app.session_state.confirmations
++    app.text_input(key="review_value_A_salaire_net").set_value("6 500,50")
++    submit(app)
++    assert app.session_state.submitted
+     record = app.session_state.confirmations["salaire_net"]
+-    assert record["value"] == 6500.0 and record["status"] == "corrige"
++    assert record["value"] == 6500.50 and record["status"] == "corrige"
+     rows = list(csv.DictReader(io.StringIO(app.session_state.csv_result.decode("utf-8-sig"))))
+-    assert rows[0]["Valeur finale"] == "6500.0"
+-    app.button(key="reopen_A_salaire_net").click().run()
+-    assert not app.exception
+-    assert app.session_state.csv_result is None
+-    assert app.number_input[0].value == 6500.0
+-    assert not app.checkbox[0].value
++    assert next(row for row in rows if row["Champ"] == "salaire_net")["Valeur finale"] == "6500.5"
++
++
++@pytest.mark.parametrize("value", ["", "nan", "-1", "0"])
++def test_invalid_salary_blocks_progress(isolated_db, value):
++    app = AppTest.from_string(REVIEW_APP).run()
++    app.text_input(key="review_value_A_salaire_net").set_value(value)
++    submit(app)
++    assert app.error and not app.session_state.submitted
++    assert not app.session_state.confirmations
+ 
+ 
+-def test_audit_failure_does_not_confirm(monkeypatch):
++def test_audit_failure_does_not_confirm(isolated_db, monkeypatch):
+     from database import audit
+-    def fail(*args, **kwargs):
+-        raise RuntimeError("audit indisponible")
++    def fail(**kwargs):
++        raise RuntimeError("unavailable")
+     monkeypatch.setattr(audit, "log_human_confirmation", fail)
+     app = AppTest.from_string(REVIEW_APP).run()
+-    app.checkbox[0].check().run()
+-    app.button(key="confirm_salaire_net_A").click().run()
+-    assert not app.exception and app.error
+-    assert app.session_state.confirmations == {}
+-    assert app.session_state.csv_result is None
++    submit(app)
++    assert app.error and not app.session_state.confirmations
+ 
+ 
+ def test_declared_blank_is_not_zero():
+@@ -65,44 +79,198 @@ st.session_state.values = render_declared_form("releve", "fictif")
+     assert app.session_state["values"]["charge_mensuelle_credits"] == 0.0
+ 
+ 
+-def test_missing_extracted_amount_stays_empty():
+-    app = AppTest.from_string(REVIEW_APP.replace('"value": 6000.0', '"value": None')).run()
+-    assert not app.exception
+-    assert app.number_input[0].value is None
+-    app.checkbox[0].check().run()
+-    app.button(key="confirm_salaire_net_A").click().run()
+-    assert not app.exception and app.error
+-    assert not app.session_state.confirmations
++def test_none_explicitly_confirms_zero(isolated_db):
++    app = AppTest.from_string('''
++import streamlit as st
++from ui.document_review import render_document_review
++st.session_state.setdefault("confirmations", {})
++render_document_review({"validation_result": {"fields": {"charge_mensuelle_credits": {"value": None}}}},
++                       "releve", "R", "test", "session", st.session_state.confirmations)
++''').run()
++    submit(app)
++    assert app.error and not app.session_state.confirmations
++    for checkbox in app.checkbox:
++        checkbox.check()
++    submit(app)
++    assert app.session_state.confirmations["charge_mensuelle_credits"]["value"] == 0
++    assert app.session_state.confirmations["revenus_complementaires"]["value"] == 0
+ 
+ 
+-def test_full_app_document_switch(tmp_path, monkeypatch):
+-    import sys
+-    from pathlib import Path
+-    from database import audit
+-    # No model calls, but the real app entry point and review interface run.
+-    monkeypatch.setitem(sys.modules, "agents.orchestrator", SimpleNamespace(Orchestrator=lambda: object()))
+-    monkeypatch.setattr(audit, "settings", SimpleNamespace(database_path=tmp_path / "audit.db"))
+-    audit.init_audit_table()
+-    app = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"))
+-    result = {"control_result": {"valid": True}, "validation_result": {
+-        "fields": {"salaire_net": {"value": 6000.0, "confidence": 0.95,
+-                   "status": "pre_rempli", "reasons": [], "source": None}},
+-        "needs_priority_review": True, "rule_engine": {}, "discrepancies": []}}
+-    docs = {key: {"client_id": "fictif", "type": "bulletin", "filename": key + ".pdf",
+-                  "result": result, "confirmed_fields": {}, "status": "completed"}
+-            for key in ("A", "B")}
+-    for key, value in {"page": "Extraction", "current_client_id": "fictif",
+-                       "documents": docs, "current_doc_id": "A", "last_result": result}.items():
++def document(kind, values, customer_id, reviewed=False):
++    return {"client_id": customer_id, "type": kind, "filename": kind + ".pdf", "status": "completed",
++            "journey_reviewed": reviewed, "confirmed_fields": {},
++            "result": {"control_result": {"valid": True}, "validation_result": {
++                "fields": {key: {"value": value} for key, value in values.items()}}}}
++
++
++def test_full_journey_corrections_persist_and_reach_simulation(isolated_db):
++    from extraction.confirmation import make_confirmation
++    customer = isolated_db.create_customer("test@example.com", "Secret123!abc", "Test", "Client", "0600000000")
++    cid = customer["id"]
++    docs = {
++        "I": document("carte_identite", {"nom": "Client", "prenom": "Test", "date_naissance": "1990-01-01"}, cid, True),
++        "A": document("bulletin", {"employeur": "Fictif", "salaire_net": 6000, "date_embauche": "2020-01-01"}, cid),
++        "R": document("releve", {"charge_mensuelle_credits": 500, "revenus_complementaires": 0}, cid, True),
++    }
++    for name, value in (("charge_mensuelle_credits", 500), ("revenus_complementaires", 0)):
++        docs["R"]["confirmed_fields"][name] = make_confirmation("releve", name, value, {"value": value}, document_id="R", advisor_id="test", source_checked=True)
++    for key, doc in docs.items():
++        isolated_db.save_document(cid, key, doc)
++    app = AppTest.from_file(str(ROOT / "app.py"))
++    for key, value in {"page": "Extraction", "account_created": True, "current_client_id": cid,
++                       "documents": docs, "compromis_skipped": True}.items():
+         app.session_state[key] = value
+     app.run()
+     assert not app.exception
+-    app.number_input(key="review_value_A_salaire_net").set_value(6500.0).run()
+-    app.checkbox(key="review_check_A_salaire_net").check().run()
+-    app.button(key="confirm_salaire_net_A").click().run()
++    app.text_input(key="review_value_A_salaire_net").set_value("7500")
++    submit(app)
++    assert app.session_state.page == "Extraction"
++    assert app.button(key="documents_open_verification")
++    app.button(key="documents_open_verification").click().run()
++    assert app.session_state.page == "Verification"
++    stored = isolated_db.load_documents(cid)
++    assert stored["A"]["journey_reviewed"]
++    assert stored["A"]["confirmed_fields"]["salaire_net"]["value"] == 7500
++    salary = next(widget for widget in app.text_input if widget.label == "Revenu mensuel net")
++    assert float(salary.value) == 7500
++    salary.set_value("8000")
++    submit(app, "Voir ma simulation")
++    assert app.session_state.page == "Simulation"
++    assert isolated_db.load_documents(cid)["A"]["confirmed_fields"]["salaire_net"]["value"] == 8000
++    assert any(metric.label == "Taux d'endettement estimé" for metric in app.metric)
++
++
++def test_quick_estimate_without_account_or_models(isolated_db):
++    app = AppTest.from_file(str(ROOT / "app.py")).run()
+     assert not app.exception
+-    app.button(key="view_B").click().run()
++    app.button(key="sidebar_quick").click().run()
++    assert not app.exception and app.session_state.page == "Estimation"
++    assert not app.session_state.account_created
++    assert app.metric[0].label == "Mensualité estimée"
++    app.number_input(key="quick_contribution").set_value(0.0).run()
++    assert not app.exception
++    app.button(key="quick_refine").click().run()
++    assert app.session_state.page == "Accueil"
++    assert app.session_state.quick_project["contribution"] == 0
++
++
++def test_home_prioritizes_documents_and_quick_estimate(isolated_db):
++    customer = isolated_db.create_customer(
++        "home@example.com", "Secret123!abc", "Test", "Client", "0600000000"
++    )
++    app = AppTest.from_file(str(ROOT / "app.py"))
++    for key, value in {
++        "page": "Accueil", "account_created": True,
++        "current_client_id": customer["id"], "documents": {},
++    }.items():
++        app.session_state[key] = value
++    app.run()
+     assert not app.exception
+-    assert app.session_state.documents["B"]["confirmed_fields"] == {}
++    assert app.button(key="home_start_documents").label == "Commencer avec mes documents"
++    assert app.button(key="home_quick").label == "Faire une estimation rapide"
++    assert app.button(key="home_ask_question").label == "Poser une question"
++    app.button(key="home_quick").click().run()
++    assert not app.exception and app.session_state.page == "Estimation"
++
++
++def test_payment_limits():
++    from ui.simulation import calculate_payment
++    assert calculate_payment(120000, 0, 10, 0) == (120000, 1000, 0)
++    assert calculate_payment(120000, 120000, 10, 4.5) == (0, 0, 0)
++    with pytest.raises(ValueError):
++        calculate_payment(120000, 130000, 10, 4.5)
++
++
++def test_database_failure_keeps_current_document(isolated_db, monkeypatch):
++    customer = isolated_db.create_customer("fail@example.com", "Secret123!abc", "Test", "Client", "0600000000")
++    cid = customer["id"]
++    doc = document("carte_identite", {"nom": "Client", "prenom": "Test", "date_naissance": "1990-01-01"}, cid)
++    app = AppTest.from_file(str(ROOT / "app.py"))
++    for key, value in {"page": "Extraction", "account_created": True, "current_client_id": cid,
++                       "documents": {"I": doc}}.items():
++        app.session_state[key] = value
++    def fail(*args, **kwargs):
++        raise RuntimeError("disk unavailable")
++    monkeypatch.setattr(isolated_db, "save_document", fail)
++    app.run()
++    app.text_input(key="review_value_I_nom").set_value("Corrigé")
++    submit(app)
++    assert app.error
++    assert not app.session_state.documents["I"]["journey_reviewed"]
++    assert not app.session_state.documents["I"]["confirmed_fields"]
++    assert app.text_input(key="review_value_I_nom").value == "Corrigé"
++
++
++def test_review_inputs_are_isolated_between_documents(isolated_db):
++    app = AppTest.from_string(REVIEW_APP.replace('result = ', 'doc_id = st.selectbox("Document", ["A", "B"])\nresult = ', 1).replace('"bulletin", "A", "test"', '"bulletin", doc_id, "test"')).run()
++    app.text_input(key="review_value_A_salaire_net").set_value("9999")
++    submit(app)
++    app.selectbox[0].set_value("B").run()
++    assert not app.exception
++    assert float(app.text_input(key="review_value_B_salaire_net").value) == 6000
++
++
++def test_existing_database_migrates_without_losing_documents(isolated_db):
++    import sqlite3
++    # Simulate the previous schema, then run the idempotent migration.
++    with sqlite3.connect(isolated_db.DB_PATH) as connection:
++        connection.execute("ALTER TABLE customer_documents DROP COLUMN journey_reviewed")
++    isolated_db.init_database()
++    isolated_db.init_database()
++    with sqlite3.connect(isolated_db.DB_PATH) as connection:
++        assert "journey_reviewed" in {row[1] for row in connection.execute("PRAGMA table_info(customer_documents)")}
++
++
++def test_completed_dossier_can_return_to_documents_and_edit(isolated_db):
++    from extraction.confirmation import make_confirmation
++
++    customer = isolated_db.create_customer(
++        "return@example.com", "Secret123!abc", "Test", "Client", "0600000000"
++    )
++    cid = customer["id"]
++    docs = {
++        "I": document("carte_identite", {
++            "nom": "Client", "prenom": "Test", "date_naissance": "1990-01-01"
++        }, cid, True),
++        "A": document("bulletin", {
++            "employeur": "Fictif", "salaire_net": 7000, "date_embauche": "2020-01-01"
++        }, cid, True),
++        "R": document("releve", {
++            "charge_mensuelle_credits": 500, "revenus_complementaires": 0
++        }, cid, True),
++    }
++    for document_id, fields in (
++        ("I", ("nom", "prenom", "date_naissance")),
++        ("A", ("employeur", "salaire_net", "date_embauche")),
++        ("R", ("charge_mensuelle_credits", "revenus_complementaires")),
++    ):
++        doc = docs[document_id]
++        for field in fields:
++            value = doc["result"]["validation_result"]["fields"][field]["value"]
++            doc["confirmed_fields"][field] = make_confirmation(
++                doc["type"], field, value, {"value": value}, document_id=document_id,
++                advisor_id="test", source_checked=True,
++            )
++        isolated_db.save_document(cid, document_id, doc)
++
++    app = AppTest.from_file(str(ROOT / "app.py"))
++    for key, value in {
++        "page": "Simulation", "account_created": True, "current_client_id": cid,
++        "documents": docs, "compromis_skipped": True,
++    }.items():
++        app.session_state[key] = value
++    app.run()
++    assert not app.exception and app.session_state.page == "Simulation"
++
++    app.button(key="sidebar_documents").click().run()
++    assert not app.exception and app.session_state.page == "Extraction"
++    assert app.button(key="view_A")
++    assert app.button(key="documents_open_simulation")
++
+     app.button(key="view_A").click().run()
+     assert not app.exception
+-    assert app.session_state.documents["A"]["confirmed_fields"]["salaire_net"]["value"] == 6500.0
++    assert app.text_input(key="review_value_A_salaire_net").value == "7000.0"
++    app.text_input(key="review_value_A_salaire_net").set_value("7200")
++    submit(app)
++    assert not app.exception and app.session_state.page == "Extraction"
++    assert isolated_db.load_documents(cid)["A"]["confirmed_fields"]["salaire_net"]["value"] == 7200
+diff --git a/ui/client_summary.py b/ui/client_summary.py
+index 70d01a0..16af3c1 100644
+--- a/ui/client_summary.py
++++ b/ui/client_summary.py
+@@ -254,48 +254,19 @@ def render_final_verification(documents, customer_id, advisor_id, session_id):
+             + ", ".join(conflicts)
+             + ". Corrigez la colonne « Valeur » après comparaison des pièces."
+         )
+-    st.info(
+-        "Vérifiez les cinq lignes. Si vous n'avez ni crédit en cours ni revenu "
+-        "complémentaire, saisissez 0 dans la ligne correspondante."
+-    )
+-
++    values = {}
+     with st.form(f"five_fields_verification_{customer_id}", border=True):
+-        edited = st.data_editor(
+-            table_rows,
+-            hide_index=True,
+-            width="stretch",
+-            num_rows="fixed",
+-            disabled=["Information", "Source", "État"],
+-            column_config={
+-                "Information": st.column_config.TextColumn("Information", pinned=True),
+-                "Valeur": st.column_config.TextColumn("Valeur à utiliser", required=True),
+-                "Source": st.column_config.TextColumn("Justificatif"),
+-                "État": st.column_config.TextColumn("Contrôle"),
+-            },
+-            key=f"verification_table_{customer_id}",
+-        )
+-        checked = st.checkbox(
+-            "J'ai vérifié ces cinq informations avec mes justificatifs",
+-            key=f"verification_checked_{customer_id}",
+-        )
+-        submitted = st.form_submit_button(
+-            "Vérifier et accéder à ma simulation",
+-            icon=":material/check_circle:",
+-            type="primary",
+-            width="stretch",
+-        )
+-
++        st.caption("Ces valeurs reprennent vos corrections. En continuant, vous confirmez ce récapitulatif.")
++        for field in FIELD_ORDER:
++            values[field] = st.text_input(
++                BUSINESS_FIELDS[field]["label"], value=proposals[field]["value"],
++                key=f"final_{customer_id}_{field}_" + str(proposals[field]["value"]),
++                help="JJ/MM/AAAA ou AAAA-MM-JJ" if field == "date_embauche" else None,
++            )
++        submitted = st.form_submit_button("Voir ma simulation", type="primary", width="stretch")
+     if not submitted:
+         return False
+-    if not checked:
+-        st.error("Cochez la confirmation après avoir vérifié les cinq informations.")
+-        return False
+ 
+-    records = edited.to_dict("records") if hasattr(edited, "to_dict") else list(edited)
+-    values = {
+-        field: records[index].get("Valeur")
+-        for index, field in enumerate(FIELD_ORDER)
+-    }
+     prepared = {}
+     errors = []
+     for field in FIELD_ORDER:
+@@ -323,33 +294,36 @@ def render_final_verification(documents, customer_id, advisor_id, session_id):
+             st.error(error)
+         return False
+ 
++    try:
++        for field, (selected_id, selected_document, confirmation) in prepared.items():
++            audit.log_human_confirmation(
++                document_path=selected_document.get("document_path") or selected_id,
++                document_type=selected_document.get("type"), field_name=field,
++                confirmed_value=confirmation["value"], advisor_id=advisor_id,
++                session_id=session_id, original_value=confirmation["original_value"],
++                source=confirmation.get("source") or {}, confirmation_status=confirmation["status"],
++            )
++    except Exception:
++        st.error("La validation n'a pas pu être enregistrée. Réessayez pour accéder à la simulation.")
++        return False
++    from copy import deepcopy
++    updated = deepcopy(documents)
+     modified = set()
+-    for field, (selected_id, selected_document, confirmation) in prepared.items():
+-        for document_id, document in documents.items():
+-            if document_id == selected_id:
+-                continue
+-            confirmations = document.get("confirmed_fields") or {}
+-            if field in confirmations:
+-                confirmations.pop(field, None)
+-                document["confirmed_fields"] = confirmations
++    for field, (selected_id, _, confirmation) in prepared.items():
++        for document_id, document in updated.items():
++            if document_id != selected_id and field in (document.get("confirmed_fields") or {}):
++                document["confirmed_fields"].pop(field)
+                 modified.add(document_id)
+-        selected_document.setdefault("confirmed_fields", {})[field] = confirmation
++        updated[selected_id].setdefault("confirmed_fields", {})[field] = confirmation
+         modified.add(selected_id)
+-        source = confirmation.get("source") or {}
+-        audit.log_human_confirmation(
+-            document_path=selected_document.get("document_path") or selected_id,
+-            document_type=selected_document.get("type"),
+-            field_name=field,
+-            confirmed_value=confirmation["value"],
+-            advisor_id=advisor_id,
+-            session_id=session_id,
+-            original_value=confirmation["original_value"],
+-            source=source,
+-            confirmation_status=confirmation["status"],
+-        )
+-
++    try:
++        for document_id in modified:
++            save_document(customer_id, document_id, updated[document_id])
++    except Exception:
++        st.error("La sauvegarde a échoué. Réessayez avant de poursuivre.")
++        return False
+     for document_id in modified:
+-        save_document(customer_id, document_id, documents[document_id])
++        documents[document_id].update(updated[document_id])
+ 
+     st.toast("Vos informations sont vérifiées. Simulation débloquée.", icon=":material/check_circle:")
+     st.session_state.page = "Simulation"
+diff --git a/ui/document_review.py b/ui/document_review.py
+index ca5f81b..f345c36 100644
+--- a/ui/document_review.py
++++ b/ui/document_review.py
+@@ -112,187 +112,85 @@ def _text_value(value):
+ 
+ 
+ def render_document_review(result, document_type, document_id, advisor_id, session_id, confirmations):
+-    """Afficher le tableau modifiable et retourner si les champs requis sont confirmés."""
++    """Valider tous les champs en une action ; le parent sauvegarde puis avance."""
+     fields = result["validation_result"]["fields"]
+-    st.caption(
+-        "Modifiez directement la colonne « Valeur ». Les informations techniques "
+-        "volumineuses, comme les transactions, ne sont pas affichées dans ce tableau."
+-    )
+-
++    names = _review_field_names(fields, document_type)
++    essential = list(REQUIRED_FIELDS[document_type])
++    if document_type == "releve":
++        essential.append("revenus_complementaires")
++    if document_type == "compromis":
++        essential = list(REVIEW_FIELDS[document_type])
++    names = list(dict.fromkeys(essential + names))
++    decisions = {name: fields.get(name) or {"value": None, "source": None} for name in names}
++    st.caption("Corrigez les champs ci-dessous. En validant, vous confirmez les avoir vérifiés avec votre document.")
+     original = Path(result.get("pdf_path", ""))
+-    upload_root = Path("data/uploads").resolve()
+-    if original.is_file() and original.resolve().is_relative_to(upload_root):
+-        st.download_button(
+-            "Consulter le document original",
+-            original.read_bytes(),
+-            file_name=original.name,
+-            key=f"original_{document_id}",
+-        )
++    if original.is_file() and original.resolve().is_relative_to(Path("data/uploads").resolve()):
++        st.download_button("Consulter mon document", original.read_bytes(),
++                           file_name=original.name, key=f"original_{document_id}")
++    values = {}
+ 
+-    names = _review_field_names(fields, document_type)
+-    decisions = {}
+-    table_rows = []
++    def render_field(name):
++        record = confirmations.get(name) or {}
++        confirmed = (record.get("document_id") == document_id
++                     and record.get("source_checked") is True
++                     and record.get("status") in ("confirme", "corrige"))
++        value = record.get("value") if confirmed else decisions[name].get("value")
++        label = LABELS.get(name, name.replace("_", " ").capitalize())
++        # Text inputs preserve missing/invalid OCR values for explicit correction.
++        values[name] = st.text_input(label, value=_text_value(value),
++                                    key=f"review_value_{document_id}_{name}",
++                                    help="JJ/MM/AAAA ou AAAA-MM-JJ" if name in DATE_FIELDS else None)
++        if name in ("charge_mensuelle_credits", "revenus_complementaires"):
++            absent = st.checkbox("Aucun crédit en cours" if name == "charge_mensuelle_credits"
++                                 else "Aucun revenu complémentaire", key=f"none_{document_id}_{name}")
++            if absent:
++                values[name] = "0"
++            st.caption("Cochez « Aucun » pour retenir 0 à la place du montant saisi.")
++
++    with st.form(f"document_review_form_{document_id}", border=True):
++        for name in essential:
++            render_field(name)
++        with st.expander("Autres informations du document"):
++            for name in names:
++                if name not in essential:
++                    render_field(name)
++        submitted = st.form_submit_button("Valider et continuer", type="primary", width="stretch")
++    if not submitted:
++        return False
++    prepared = {}
++    errors = []
++    required = set(REQUIRED_FIELDS[document_type])
++    if document_type == "releve":
++        required.add("revenus_complementaires")
+     for name in names:
+-        decision = fields.get(name) or {
+-            "value": None,
+-            "status": "absent",
+-            "source": None,
+-            "reasons": [],
+-        }
+-        decisions[name] = decision
+-        record = confirmations.get(name)
+-        confirmed = (
+-            isinstance(record, dict)
+-            and record.get("document_id") == document_id
+-            and record.get("status") in ("confirme", "corrige")
+-            and record.get("source_checked") is True
+-        )
+-        value = record.get("value") if confirmed else decision.get("value")
+-        source = (record.get("source") if confirmed else decision.get("source")) or {}
+-        if confirmed:
+-            status = "Confirmée"
+-        elif value is None:
+-            status = "À compléter"
+-        elif decision.get("status") == "signale":
+-            status = "À vérifier"
+-        else:
+-            status = "Extraite"
+-        document_name = source.get("document") or Path(result.get("pdf_path", "")).name or "Document"
+-        page = source.get("page")
+-        source_label = document_name + (f" — page {page}" if page else "")
+-        table_rows.append({
+-            "Information": LABELS.get(name, name.replace("_", " ").capitalize()),
+-            "Valeur": _text_value(value),
+-            "Statut": status,
+-            "Justificatif": source_label,
+-        })
+-
+-    with st.form(f"document_review_table_form_{document_id}", border=True):
+-        edited = st.data_editor(
+-            table_rows,
+-            hide_index=True,
+-            width="stretch",
+-            num_rows="fixed",
+-            disabled=["Information", "Statut", "Justificatif"],
+-            column_config={
+-                "Information": st.column_config.TextColumn("Information", pinned=True),
+-                "Valeur": st.column_config.TextColumn("Valeur corrigée"),
+-                "Statut": st.column_config.TextColumn("État"),
+-                "Justificatif": st.column_config.TextColumn("Source"),
+-            },
+-            key=f"document_review_table_{document_id}",
+-        )
+-        checked = st.checkbox(
+-            "J'ai vérifié les informations modifiées avec mon justificatif",
+-            key=f"document_review_checked_{document_id}",
+-        )
+-        submitted = st.form_submit_button(
+-            "Enregistrer toutes mes corrections",
+-            icon=":material/save:",
+-            type="primary",
+-            width="stretch",
+-        )
+-
+-    if submitted:
+-        if not checked:
+-            st.error("Cochez la confirmation après avoir vérifié le tableau.")
+-        else:
+-            records = edited.to_dict("records") if hasattr(edited, "to_dict") else list(edited)
+-            prepared = {}
+-            cleared = []
+-            errors = []
+-            required_fields = set(REQUIRED_FIELDS[document_type])
+-            for index, name in enumerate(names):
+-                edited_value = records[index].get("Valeur")
+-                if edited_value is None or not str(edited_value).strip():
+-                    if name in required_fields:
+-                        errors.append(
+-                            f"{LABELS.get(name, name.replace('_', ' ').capitalize())} : "
+-                            "renseignez une valeur"
+-                        )
+-                    else:
+-                        cleared.append(name)
+-                    continue
+-                try:
+-                    prepared[name] = make_confirmation(
+-                        document_type,
+-                        name,
+-                        edited_value,
+-                        decisions[name],
+-                        document_id=document_id,
+-                        advisor_id=advisor_id,
+-                        source_checked=True,
+-                    )
+-                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+-                    errors.append(
+-                        f"{LABELS.get(name, name.replace('_', ' ').capitalize())} : {exc}"
+-                    )
+-
+-            if errors:
+-                for error in errors:
+-                    st.error(error)
+-            else:
+-                for name in cleared:
+-                    confirmations.pop(name, None)
+-                for name, record in prepared.items():
+-                    confirmations[name] = record
+-                    audit.log_human_confirmation(
+-                        document_path=result.get("pdf_path", document_id),
+-                        document_type=document_type,
+-                        field_name=name,
+-                        confirmed_value=record["value"],
+-                        advisor_id=advisor_id,
+-                        session_id=session_id,
+-                        original_value=record["original_value"],
+-                        source=record["source"],
+-                        confirmation_status=record["status"],
+-                    )
+-                st.success("Toutes les corrections du tableau sont enregistrées.")
+-                st.rerun()
+-
+-    with st.expander("Voir les extraits utilisés comme preuves", icon=":material/article:"):
+-        evidence_rows = []
+-        for name in names:
+-            source = decisions[name].get("source") or {}
+-            if source.get("quote"):
+-                evidence_rows.append({
+-                    "Information": LABELS.get(name, name.replace("_", " ").capitalize()),
+-                    "Page": _text_value(source.get("page")),
+-                    "Extrait OCR": _text_value(source.get("quote")),
+-                })
+-        if evidence_rows:
+-            st.dataframe(evidence_rows, hide_index=True, width="stretch")
+-        else:
+-            st.caption("Aucun extrait précis n'est disponible pour ce document.")
+-
+-    missing = [
+-        name for name in REQUIRED_FIELDS[document_type]
+-        if not isinstance(confirmations.get(name), dict)
+-        or confirmations[name].get("document_id") != document_id
+-        or confirmations[name].get("value") is None
+-    ]
+-    if missing:
+-        st.warning(
+-            "Informations obligatoires à vérifier : "
+-            + ", ".join(LABELS.get(name, name.replace("_", " ").capitalize()) for name in missing)
+-        )
+-    else:
+-        st.success(
+-            "Les informations obligatoires sont enregistrées. Vous pouvez continuer."
+-        )
+-
++        value = values[name]
++        if not str(value).strip():
++            if name in required:
++                errors.append(f"{LABELS.get(name, name.replace('_', ' ').capitalize())} : renseignez une valeur.")
++            continue
++        try:
++            record = make_confirmation(document_type, name, value, decisions[name],
++                                       document_id=document_id, advisor_id=advisor_id, source_checked=True)
++            if name == "salaire_net" and record["value"] <= 0:
++                raise ValueError("Le revenu doit être supérieur à zéro.")
++            prepared[name] = record
++        except (ValueError, TypeError) as exc:
++            errors.append(f"{LABELS.get(name, name)} : {exc}")
++    if errors:
++        for error in errors:
++            st.error(error)
++        return False
+     try:
+-        csv_data = export_confirmed_csv(result, document_type, confirmations, document_id)
+-    except (ValueError, TypeError) as exc:
+-        st.error(f"Export bloqué : {exc}")
+-        csv_data = None
+-    st.download_button(
+-        "Télécharger mes informations vérifiées (CSV)",
+-        csv_data or b"",
+-        file_name=f"champs_confirmes_{document_type}.csv",
+-        mime="text/csv",
+-        disabled=csv_data is None,
+-        key=f"export_{document_id}",
+-        on_click="ignore",
+-    )
+-    return not missing
++        for name, record in prepared.items():
++            audit.log_human_confirmation(
++                document_path=result.get("pdf_path", document_id), document_type=document_type,
++                field_name=name, confirmed_value=record["value"], advisor_id=advisor_id,
++                session_id=session_id, original_value=record["original_value"],
++                source=record["source"], confirmation_status=record["status"],
++            )
++    except Exception:
++        st.error("La validation n'a pas pu être enregistrée. Vos saisies sont conservées ; réessayez.")
++        return False
++    confirmations.clear()
++    confirmations.update(prepared)
++    return True
+diff --git a/ui/simulation.py b/ui/simulation.py
+new file mode 100644
+index 0000000..75b9f53
+--- /dev/null
++++ b/ui/simulation.py
+@@ -0,0 +1,50 @@
++"""Simulation indicative commune au parcours rapide et au dossier vérifié."""
++import math
++
++import streamlit as st
++
++
++def calculate_payment(price, contribution, years, annual_rate):
++    values = (price, contribution, years, annual_rate)
++    if not all(math.isfinite(float(value)) for value in values):
++        raise ValueError("Renseignez des montants valides.")
++    if price <= 0 or contribution < 0 or contribution > price:
++        raise ValueError("Le prix doit être positif et l'apport compris entre 0 et le prix du bien.")
++    if years <= 0 or annual_rate < 0:
++        raise ValueError("La durée doit être positive et le taux positif ou nul.")
++    capital = price - contribution
++    months = years * 12
++    rate = annual_rate / 1200
++    payment = capital / months if rate == 0 else capital * rate / (1 - (1 + rate) ** -months)
++    return capital, payment, payment * months - capital
++
++
++def render_simulation(project=None, *, key_prefix="quick"):
++    project = project or {}
++    result = st.container()
++    st.subheader("Mon projet")
++    price = st.number_input("Prix du bien (MAD)", min_value=0.0,
++                            value=float(project.get("purchase_price", 600000)),
++                            step=10000.0, key=f"{key_prefix}_price")
++    contribution = st.number_input("Mon apport personnel (MAD)", min_value=0.0,
++                                   value=float(project.get("contribution", 100000)),
++                                   step=5000.0, key=f"{key_prefix}_contribution")
++    years = st.slider("Durée souhaitée", 5, 30, int(project.get("duration_years", 20)),
++                      format="%d ans", key=f"{key_prefix}_years")
++    with st.expander("Taux et détails du calcul"):
++        rate = st.number_input("Taux annuel indicatif (%)", min_value=0.0, max_value=20.0,
++                               value=float(project.get("annual_rate", 4.5)), step=0.05, key=f"{key_prefix}_rate")
++        st.caption("Hypothèse de simulation modifiable ; le taux proposé par la banque peut différer.")
++        details = st.container()
++    try:
++        capital, payment, interest = calculate_payment(price, contribution, years, rate)
++    except ValueError as exc:
++        result.error(str(exc))
++        return None
++    result.metric("Mensualité estimée", f"{payment:,.2f} MAD / mois")
++    result.caption(f"Sur {years} ans · taux indicatif {rate:.2f} % · hors assurance et frais")
++    details.write(f"Montant à financer : {capital:,.2f} MAD")
++    details.write(f"Coût estimé des intérêts : {interest:,.2f} MAD")
++    st.caption("Estimation non contractuelle, hors assurance et frais. Elle ne constitue pas un accord de crédit.")
++    return {"purchase_price": price, "contribution": contribution, "duration_years": years,
++            "monthly_payment": payment, "annual_rate": rate}

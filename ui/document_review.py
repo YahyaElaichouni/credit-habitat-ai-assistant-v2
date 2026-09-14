@@ -6,7 +6,10 @@ import unicodedata
 from collections import defaultdict
 from pathlib import Path
 from typing import get_args
-
+from ui.document_preview import (
+    preferred_source_page,
+    render_document_preview,
+)
 import streamlit as st
 
 from database import audit
@@ -111,86 +114,222 @@ def _text_value(value):
     return str(value)
 
 
-def render_document_review(result, document_type, document_id, advisor_id, session_id, confirmations):
-    """Valider tous les champs en une action ; le parent sauvegarde puis avance."""
+def render_document_review(
+    result,
+    document_type,
+    document_id,
+    advisor_id,
+    session_id,
+    confirmations,
+):
+    """Afficher le document et les informations modifiables côte à côte."""
     fields = result["validation_result"]["fields"]
     names = _review_field_names(fields, document_type)
+
     essential = list(REQUIRED_FIELDS[document_type])
+
     if document_type == "releve":
         essential.append("revenus_complementaires")
+
     if document_type == "compromis":
         essential = list(REVIEW_FIELDS[document_type])
+
     names = list(dict.fromkeys(essential + names))
-    decisions = {name: fields.get(name) or {"value": None, "source": None} for name in names}
-    st.caption("Corrigez les champs ci-dessous. En validant, vous confirmez les avoir vérifiés avec votre document.")
-    original = Path(result.get("pdf_path", ""))
-    if original.is_file() and original.resolve().is_relative_to(Path("data/uploads").resolve()):
-        st.download_button("Consulter mon document", original.read_bytes(),
-                           file_name=original.name, key=f"original_{document_id}")
+
+    decisions = {
+        name: fields.get(name) or {
+            "value": None,
+            "source": None,
+        }
+        for name in names
+    }
+
+    st.caption(
+        "Comparez les informations avec votre justificatif, "
+        "corrigez-les si nécessaire, puis validez."
+    )
+
     values = {}
 
     def render_field(name):
         record = confirmations.get(name) or {}
-        confirmed = (record.get("document_id") == document_id
-                     and record.get("source_checked") is True
-                     and record.get("status") in ("confirme", "corrige"))
-        value = record.get("value") if confirmed else decisions[name].get("value")
-        label = LABELS.get(name, name.replace("_", " ").capitalize())
-        # Text inputs preserve missing/invalid OCR values for explicit correction.
-        values[name] = st.text_input(label, value=_text_value(value),
-                                    key=f"review_value_{document_id}_{name}",
-                                    help="JJ/MM/AAAA ou AAAA-MM-JJ" if name in DATE_FIELDS else None)
-        if name in ("charge_mensuelle_credits", "revenus_complementaires"):
-            absent = st.checkbox("Aucun crédit en cours" if name == "charge_mensuelle_credits"
-                                 else "Aucun revenu complémentaire", key=f"none_{document_id}_{name}")
+
+        confirmed = (
+            record.get("document_id") == document_id
+            and record.get("source_checked") is True
+            and record.get("status") in ("confirme", "corrige")
+        )
+
+        value = (
+            record.get("value")
+            if confirmed
+            else decisions[name].get("value")
+        )
+
+        label = LABELS.get(
+            name,
+            name.replace("_", " ").capitalize(),
+        )
+
+        values[name] = st.text_input(
+            label,
+            value=_text_value(value),
+            key=f"review_value_{document_id}_{name}",
+            help=(
+                "JJ/MM/AAAA ou AAAA-MM-JJ"
+                if name in DATE_FIELDS
+                else None
+            ),
+        )
+
+        source = decisions[name].get("source") or {}
+
+        if source.get("page"):
+            st.caption(
+                f"Trouvé à la page {source['page']}"
+            )
+
+        if name in (
+            "charge_mensuelle_credits",
+            "revenus_complementaires",
+        ):
+            checkbox_label = (
+                "Aucun crédit en cours"
+                if name == "charge_mensuelle_credits"
+                else "Aucun revenu complémentaire"
+            )
+
+            absent = st.checkbox(
+                checkbox_label,
+                key=f"none_{document_id}_{name}",
+            )
+
             if absent:
                 values[name] = "0"
-            st.caption("Cochez « Aucun » pour retenir 0 à la place du montant saisi.")
 
-    with st.form(f"document_review_form_{document_id}", border=True):
-        for name in essential:
-            render_field(name)
-        with st.expander("Autres informations du document"):
-            for name in names:
-                if name not in essential:
-                    render_field(name)
-        submitted = st.form_submit_button("Valider et continuer", type="primary", width="stretch")
+    preview_column, information_column = st.columns(
+        [1, 1.05],
+        gap="large",
+    )
+
+    with preview_column:
+        render_document_preview(
+            document_path=result.get("pdf_path"),
+            document_id=document_id,
+            preferred_page=preferred_source_page(decisions),
+        )
+
+    with information_column:
+        st.markdown("#### Informations détectées")
+
+        with st.form(
+            f"document_review_form_{document_id}",
+            border=True,
+        ):
+            for name in essential:
+                render_field(name)
+
+            additional_fields = [
+                name
+                for name in names
+                if name not in essential
+            ]
+
+            if additional_fields:
+                with st.expander(
+                    "Voir les autres informations"
+                ):
+                    for name in additional_fields:
+                        render_field(name)
+
+            submitted = st.form_submit_button(
+                "Valider et continuer",
+                type="primary",
+                width="stretch",
+            )
+
     if not submitted:
         return False
+
     prepared = {}
     errors = []
+
     required = set(REQUIRED_FIELDS[document_type])
+
     if document_type == "releve":
         required.add("revenus_complementaires")
+
     for name in names:
         value = values[name]
+
         if not str(value).strip():
             if name in required:
-                errors.append(f"{LABELS.get(name, name.replace('_', ' ').capitalize())} : renseignez une valeur.")
+                label = LABELS.get(
+                    name,
+                    name.replace("_", " ").capitalize(),
+                )
+                errors.append(
+                    f"{label} : renseignez une valeur."
+                )
             continue
+
         try:
-            record = make_confirmation(document_type, name, value, decisions[name],
-                                       document_id=document_id, advisor_id=advisor_id, source_checked=True)
-            if name == "salaire_net" and record["value"] <= 0:
-                raise ValueError("Le revenu doit être supérieur à zéro.")
+            record = make_confirmation(
+                document_type,
+                name,
+                value,
+                decisions[name],
+                document_id=document_id,
+                advisor_id=advisor_id,
+                source_checked=True,
+            )
+
+            if (
+                name == "salaire_net"
+                and record["value"] <= 0
+            ):
+                raise ValueError(
+                    "Le revenu doit être supérieur à zéro."
+                )
+
             prepared[name] = record
+
         except (ValueError, TypeError) as exc:
-            errors.append(f"{LABELS.get(name, name)} : {exc}")
+            errors.append(
+                f"{LABELS.get(name, name)} : {exc}"
+            )
+
     if errors:
         for error in errors:
             st.error(error)
+
         return False
+
     try:
         for name, record in prepared.items():
             audit.log_human_confirmation(
-                document_path=result.get("pdf_path", document_id), document_type=document_type,
-                field_name=name, confirmed_value=record["value"], advisor_id=advisor_id,
-                session_id=session_id, original_value=record["original_value"],
-                source=record["source"], confirmation_status=record["status"],
+                document_path=result.get(
+                    "pdf_path",
+                    document_id,
+                ),
+                document_type=document_type,
+                field_name=name,
+                confirmed_value=record["value"],
+                advisor_id=advisor_id,
+                session_id=session_id,
+                original_value=record["original_value"],
+                source=record["source"],
+                confirmation_status=record["status"],
             )
+
     except Exception:
-        st.error("La validation n'a pas pu être enregistrée. Vos saisies sont conservées ; réessayez.")
+        st.error(
+            "La validation n’a pas pu être enregistrée. "
+            "Vos saisies sont conservées ; réessayez."
+        )
         return False
+
     confirmations.clear()
     confirmations.update(prepared)
+
     return True

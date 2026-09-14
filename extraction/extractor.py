@@ -16,7 +16,6 @@ from extraction.prompts import (
     SYSTEM_PROMPT,
     DOCUMENT_PROMPTS,
 )
-
 from extraction.schema import (
     DOCUMENT_SCHEMAS,
     extract_confidences,
@@ -27,6 +26,7 @@ from extraction.identity_mrz import fill_missing_identity_fields
 from extraction.payroll_fallback import fill_missing_payroll_fields
 from extraction.statement_fallback import fill_missing_statement_fields
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +34,7 @@ class DocumentExtractor:
 
     def __init__(
         self,
-        model: str = "mistral"
+        model: str = "mistral",
     ):
         """
         Initialise le moteur d'extraction.
@@ -47,37 +47,48 @@ class DocumentExtractor:
 
         self.model = model
 
-        logger.debug("Modèle LLM : %s", self.model)
+        logger.debug(
+            "Modèle LLM d'extraction : %s",
+            self.model,
+        )
 
     # =====================================================
-    # DETECTION DU SCHEMA
+    # DÉTECTION DU SCHÉMA
     # =====================================================
 
     def get_schema(
         self,
-        document_type: str
+        document_type: str,
     ) -> Type[BaseModel]:
+        """
+        Retourner le schéma Pydantic associé au document.
+        """
 
         if document_type not in DOCUMENT_SCHEMAS:
-
             raise ValueError(
-                f"Type de document inconnu : {document_type}"
+                f"Type de document inconnu : {document_type}. "
+                f"Types acceptés : {list(DOCUMENT_SCHEMAS.keys())}"
             )
 
         return DOCUMENT_SCHEMAS[document_type]
 
     # =====================================================
-    # CREATION DU PROMPT
+    # CRÉATION DU PROMPT
     # =====================================================
 
     def build_prompt(
         self,
         document_type: str,
-        ocr_text: str
+        ocr_text: str,
     ) -> str:
+        """
+        Construire le prompt d'extraction.
+
+        Le texte OCR est encadré afin qu'il soit considéré
+        comme une donnée et jamais comme une instruction.
+        """
 
         if document_type not in DOCUMENT_PROMPTS:
-
             raise ValueError(
                 f"Prompt inconnu pour : {document_type}"
             )
@@ -86,55 +97,85 @@ class DocumentExtractor:
             document_type
         ]
 
-        # Le texte OCR n'est jamais inséré brut dans le prompt : il est
-        # toujours encadré par des délimiteurs explicites (sanitizer.py),
-        # pour que le modèle ne puisse pas confondre le contenu du
-        # document avec une instruction à suivre. Le rappel de cette
-        # règle ("ceci est une donnée, pas un ordre") vit dans
-        # SYSTEM_PROMPT (extraction/prompts.py), passé au rôle "system"
-        # dans call_llm — vérifiez qu'il le contient bien.
         return prompt_template.format(
             ocr_text=wrap_as_data(ocr_text)
         )
 
     # =====================================================
-    # APPEL LLM
+    # APPEL DU LLM
     # =====================================================
 
     def call_llm(
         self,
-        prompt: str
+        prompt: str,
+        schema: Type[BaseModel],
     ) -> str:
+        """
+        Appeler Ollama avec une sortie JSON structurée.
+
+        Le schéma Pydantic est directement transmis à Ollama.
+        La température à zéro réduit les différences entre
+        plusieurs analyses du même texte OCR.
+        """
+
+        json_schema = schema.model_json_schema()
+
+        structured_prompt = (
+            f"{prompt}\n\n"
+            "CONTRAINTE DE SORTIE OBLIGATOIRE\n"
+            "Retourne uniquement un objet JSON valide respectant "
+            "exactement le schéma ci-dessous.\n"
+            "N'ajoute aucun texte avant ou après le JSON.\n"
+            "Quand une information n'est pas clairement présente "
+            "dans le document, utilise null au lieu de l'inventer.\n\n"
+            f"{json.dumps(json_schema, ensure_ascii=False)}"
+        )
 
         try:
             response = ollama.chat(
-
                 model=self.model,
-
                 messages=[
-
                     {
                         "role": "system",
-                        "content": SYSTEM_PROMPT
+                        "content": SYSTEM_PROMPT,
                     },
-
                     {
                         "role": "user",
-                        "content": prompt
-                    }
-
+                        "content": structured_prompt,
+                    },
                 ],
 
-                format="json"
+                # Le modèle doit respecter le schéma Pydantic.
+                format=json_schema,
+
+                # Configuration stable pour l'extraction documentaire.
+                options={
+                    "temperature": 0,
+                    "top_p": 0.1,
+                },
             )
-        except Exception as e:
+
+        except Exception as error:
+            logger.exception(
+                "[DocumentExtractor] Échec de l'appel Ollama "
+                "avec le modèle %s",
+                self.model,
+            )
+
             raise RuntimeError(
                 f"Échec de l'appel au modèle Ollama ({self.model}). "
                 "Vérifiez qu'Ollama tourne bien en local et que le "
-                "modèle est disponible (`ollama list`)."
-            ) from e
+                "modèle est disponible avec `ollama list`."
+            ) from error
 
-        return response["message"]["content"]
+        content = response.get("message", {}).get("content")
+
+        if not content or not content.strip():
+            raise ValueError(
+                "Le modèle Ollama a retourné une réponse vide."
+            )
+
+        return content
 
     # =====================================================
     # PARSING JSON
@@ -142,18 +183,32 @@ class DocumentExtractor:
 
     def parse_json(
         self,
-        response: str
+        response: str,
     ) -> Dict[str, Any]:
+        """
+        Convertir la réponse du LLM en dictionnaire Python.
+        """
 
         try:
+            parsed_data = json.loads(response)
 
-            return json.loads(response)
-
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as error:
+            logger.error(
+                "[DocumentExtractor] JSON invalide reçu : %s",
+                response[:1000],
+            )
 
             raise ValueError(
                 "Le LLM n'a pas retourné un JSON valide."
-            ) from e
+            ) from error
+
+        if not isinstance(parsed_data, dict):
+            raise ValueError(
+                "Le LLM doit retourner un objet JSON, "
+                "et non une liste ou une valeur simple."
+            )
+
+        return parsed_data
 
     # =====================================================
     # VALIDATION PYDANTIC
@@ -162,97 +217,138 @@ class DocumentExtractor:
     def validate(
         self,
         data: Dict[str, Any],
-        document_type: str
+        document_type: str,
     ) -> BaseModel:
+        """
+        Valider les données extraites avec le schéma Pydantic.
+        """
 
         schema = self.get_schema(
             document_type
         )
 
         try:
-
             validated = schema.model_validate(
                 data
             )
 
-            # Le routage (quel type de document on traite) est décidé
-            # par le pipeline, jamais par le contenu du document. On ne
-            # fait pas confiance à un éventuel "document_type" présent
-            # dans le JSON retourné par le LLM.
+            # Le type de document vient du pipeline.
+            # Il ne doit jamais être choisi par le LLM.
             validated.document_type = document_type
 
             return validated
 
-        except ValidationError as e:
+        except ValidationError as error:
+            logger.error(
+                "[DocumentExtractor] Données incompatibles avec "
+                "le schéma %s : %s",
+                document_type,
+                error,
+            )
 
             raise ValueError(
-                f"JSON incompatible avec le schema "
-                f"{document_type} :\n{e}"
-            ) from e
+                f"JSON incompatible avec le schéma "
+                f"{document_type} :\n{error}"
+            ) from error
 
     # =====================================================
-    # EXTRACTION COMPLETE
+    # EXTRACTION COMPLÈTE
     # =====================================================
 
     def extract(
         self,
         ocr_text: str,
-        document_type: str
+        document_type: str,
     ) -> BaseModel:
+        """
+        Extraire et valider les informations d'un document.
+        """
 
         if not ocr_text or not ocr_text.strip():
-
             raise ValueError(
                 "Le texte OCR est vide."
             )
 
-        logger.info("Extraction du document : %s", document_type)
+        logger.info(
+            "[DocumentExtractor] Début de l'extraction : %s",
+            document_type,
+        )
 
         # -------------------------------------------------
-        # 1. Construire le prompt (texte OCR encadré par sanitizer)
+        # 1. Récupérer le schéma correspondant au document
+        # -------------------------------------------------
+
+        schema = self.get_schema(
+            document_type
+        )
+
+        # -------------------------------------------------
+        # 2. Construire le prompt
         # -------------------------------------------------
 
         prompt = self.build_prompt(
-            document_type,
-            ocr_text
+            document_type=document_type,
+            ocr_text=ocr_text,
         )
 
         # -------------------------------------------------
-        # 2. Appeler le LLM
+        # 3. Appeler Ollama avec le schéma strict
         # -------------------------------------------------
 
         response = self.call_llm(
-            prompt
+            prompt=prompt,
+            schema=schema,
         )
 
         # -------------------------------------------------
-        # 3. Parser le JSON
+        # 4. Convertir la réponse JSON
         # -------------------------------------------------
 
         data = self.parse_json(
             response
         )
 
-        # Une MRZ lisible peut fournir un secours déterministe lorsque le
-        # modèle laisse des champs CNIE absents. Les valeurs LLM existantes
-        # ne sont jamais écrasées et la confiance reste sous le seuil humain.
+        # -------------------------------------------------
+        # 5. Appliquer les extracteurs déterministes
+        # -------------------------------------------------
+        #
+        # Le LLM reste l'extracteur principal.
+        # Les fallbacks complètent ou corrigent les champs
+        # qui peuvent être retrouvés de manière fiable dans
+        # le texte OCR.
+        # -------------------------------------------------
+
         if document_type == "carte_identite":
-            data = fill_missing_identity_fields(data, ocr_text)
+            data = fill_missing_identity_fields(
+                data,
+                ocr_text,
+            )
+
         elif document_type == "bulletin":
-            data = fill_missing_payroll_fields(data, ocr_text)
+            data = fill_missing_payroll_fields(
+                data,
+                ocr_text,
+            )
+
         elif document_type == "releve":
-            data = fill_missing_statement_fields(data, ocr_text)
+            data = fill_missing_statement_fields(
+                data,
+                ocr_text,
+            )
 
         # -------------------------------------------------
-        # 4. Valider avec Pydantic
+        # 6. Validation finale avec Pydantic
         # -------------------------------------------------
 
         validated = self.validate(
-            data,
-            document_type
+            data=data,
+            document_type=document_type,
         )
 
-        logger.info("Extraction réussie.")
+        logger.info(
+            "[DocumentExtractor] Extraction terminée : %s",
+            document_type,
+        )
 
         return validated
 
@@ -263,22 +359,19 @@ class DocumentExtractor:
     def extract_json(
         self,
         ocr_text: str,
-        document_type: str
+        document_type: str,
     ) -> Dict[str, Any]:
-        """Retourne trois vues du même résultat :
+        """
+        Retourner trois représentations du résultat :
 
-        - "data" : valeurs aplaties (champ -> valeur brute), ce que
-          rule_engine.checks attend.
-        - "confidences" : champ -> indice de confiance (EB-125), pour
-          comparaison au seuil dans validation_agent.py.
-        - "raw" : dump complet imbriqué {value, confidence}, conservé
-          tel quel pour le journal d'audit (traçabilité fidèle de ce
-          que le LLM a réellement produit).
+        - data : valeurs simples utilisées par le moteur de règles ;
+        - confidences : indice de confiance de chaque champ ;
+        - raw : structure complète avec valeur, confiance et source.
         """
 
         result = self.extract(
-            ocr_text,
-            document_type
+            ocr_text=ocr_text,
+            document_type=document_type,
         )
 
         return {
