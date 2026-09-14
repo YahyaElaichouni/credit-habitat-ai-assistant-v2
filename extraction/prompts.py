@@ -304,7 +304,10 @@ ASSOCIATION DES LIBELLES (variantes possibles)
 - iban : uniquement une valeur explicitement précédée de "IBAN".
   Un RIB marocain n'est pas automatiquement un IBAN.
 - periode_debut/periode_fin : "Du ... Au ...", "Période du ... au ...",
-  "Relevé du ... au ...". Une date d'édition isolée n'est pas une période.
+  "Relevé du ... au ...". Sur les relevés mensuels Banque Populaire,
+  "EXTRAIT DE COMPTE AU [date]" et "NOUVEAU SOLDE AU [date]" indiquent
+  periode_fin. La date d'un "ANCIEN SOLDE AU" est antérieure à la période :
+  ne l'utilise jamais comme periode_fin.
 - solde_initial : "Solde initial", "Ancien solde", "Solde précédent",
   "Solde de départ", "Solde au début de période".
 - solde_final : "Nouveau solde", "Solde final", "Solde à nouveau",
@@ -338,10 +341,17 @@ G. Chaque transaction doit garder page et quote. quote doit reproduire la
    désigne solde_initial. "Nouveau solde", "solde final" ou le récapitulatif
    "solde au [date]" désigne solde_final.
 3. Une période explicitement affichée sous la forme "Du [date] Au [date]"
-   alimente periode_debut et periode_fin. Sinon, ne déduis pas automatiquement
-   la période depuis les dates des opérations.
+   alimente periode_debut et periode_fin. "EXTRAIT DE COMPTE AU [date]" ou
+   "NOUVEAU SOLDE AU [date]" alimente periode_fin, mais "ANCIEN SOLDE AU"
+   ne l'alimente jamais. Sinon, ne déduis pas automatiquement la période
+   depuis les dates des opérations.
 4. Dirham marocain, MAD et DH correspondent à MAD.
 5. Ne confonds pas l'adresse du titulaire avec celle de l'agence.
+6. Quand l'OCR aplatit un en-tête Banque Populaire du type
+   "Agence | MAARIF | MME LAALEJ NADA Adresse | ...", récupère l'agence,
+   le nom, le prénom et l'adresse dans ces cellules successives. Dans le
+   tableau RIB, "190 | 780 | [numéro de compte] | 76" fournit
+   numero_compte ; il ne fournit pas iban.
 
 EXEMPLES DE TRANSACTIONS
 
