@@ -165,16 +165,48 @@ class OCREngine:
                     pass
                 collected.append(line)
 
-        # Supprimer les doublons créés par le chevauchement des bandes.
+        # Supprimer uniquement les vrais doublons créés par le chevauchement
+        # des bandes. Une déduplication basée sur le texte seul supprimait des
+        # libellés légitimes répétés plus bas dans le bulletin (par exemple
+        # « Salaire brut » dans le détail puis dans la zone Cumuls).
         unique = []
-        seen = set()
         for line in sorted(collected, key=lambda item: float(item.get("confidence") or 0), reverse=True):
-            key = " ".join(str(line.get("text") or "").upper().split())
-            if not key or key in seen:
+            normalized = " ".join(str(line.get("text") or "").upper().split())
+            if not normalized:
                 continue
-            seen.add(key)
+            center = self._box_center(line.get("bbox"))
+            duplicate = False
+            for kept in unique:
+                if normalized != kept["_normalized_text"]:
+                    continue
+                kept_center = kept["_center"]
+                # Sans coordonnées fiables, conserver les deux occurrences :
+                # supprimer une vraie ligne serait plus grave qu'un doublon.
+                if center is None or kept_center is None:
+                    continue
+                if abs(center[0] - kept_center[0]) <= 14 and abs(center[1] - kept_center[1]) <= 14:
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+            line = dict(line)
+            line["_normalized_text"] = normalized
+            line["_center"] = center
             unique.append(line)
+        for line in unique:
+            line.pop("_normalized_text", None)
+            line.pop("_center", None)
         return unique
+
+    @staticmethod
+    def _box_center(box):
+        try:
+            points = list(box)
+            xs = [float(point[0]) for point in points]
+            ys = [float(point[1]) for point in points]
+            return (sum(xs) / len(xs), sum(ys) / len(ys))
+        except (TypeError, ValueError, IndexError, ZeroDivisionError):
+            return None
 
     @staticmethod
     def _prediction_to_lines(raw_result):
@@ -250,6 +282,8 @@ class OCREngine:
                     "text": text,
                     "x": min(xs),
                     "y": (y_min + y_max) / 2,
+                    "y_min": y_min,
+                    "y_max": y_max,
                     "height": max(1.0, y_max - y_min),
                 })
             except (TypeError, ValueError, IndexError):
@@ -259,19 +293,45 @@ class OCREngine:
             return "\n".join(text for _, text in sorted(fallback))
 
         typical_height = statistics.median(item["height"] for item in positioned)
-        tolerance = max(8.0, typical_height * 0.65)
+        tolerance = max(5.0, typical_height * 0.60)
         rows = []
         for item in sorted(positioned, key=lambda value: (value["y"], value["x"])):
-            if not rows or abs(item["y"] - rows[-1]["center"]) > tolerance:
-                rows.append({"center": item["y"], "items": [item]})
-            else:
-                row = rows[-1]
-                row["items"].append(item)
-                row["center"] = sum(value["y"] for value in row["items"]) / len(row["items"])
+            best_row = None
+            best_distance = None
+            # Chercher dans quelques lignes récentes évite qu'une cellule un
+            # peu plus haute ou plus basse soit isolée de sa ligne visuelle.
+            for row in reversed(rows[-4:]):
+                overlap = max(
+                    0.0,
+                    min(item["y_max"], row["y_max"])
+                    - max(item["y_min"], row["y_min"]),
+                )
+                overlap_ratio = overlap / max(1.0, min(item["height"], row["height"]))
+                distance = abs(item["y"] - row["center"])
+                if overlap_ratio >= 0.25 or distance <= tolerance:
+                    if best_distance is None or distance < best_distance:
+                        best_row = row
+                        best_distance = distance
+
+            if best_row is None:
+                rows.append({
+                    "center": item["y"],
+                    "y_min": item["y_min"],
+                    "y_max": item["y_max"],
+                    "height": item["height"],
+                    "items": [item],
+                })
+                continue
+
+            best_row["items"].append(item)
+            best_row["center"] = statistics.median(value["y"] for value in best_row["items"])
+            best_row["y_min"] = min(value["y_min"] for value in best_row["items"])
+            best_row["y_max"] = max(value["y_max"] for value in best_row["items"])
+            best_row["height"] = statistics.median(value["height"] for value in best_row["items"])
 
         rendered = [
             " | ".join(value["text"] for value in sorted(row["items"], key=lambda value: value["x"]))
-            for row in rows
+            for row in sorted(rows, key=lambda value: value["center"])
         ]
         rendered.extend(text for _, text in sorted(fallback))
         return "\n".join(rendered)

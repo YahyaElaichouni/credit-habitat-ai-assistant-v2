@@ -23,6 +23,48 @@ def _plain(text: str) -> str:
     )
 
 
+def _normalized(text: Any) -> str:
+    """Normalisation identique à celle utilisée par le contrôle de provenance."""
+    return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+
+
+def _source_is_recoverable(field: Any, ocr_text: str) -> bool:
+    """Indique si un champ LLM doit être repris par le secours déterministe.
+
+    Un champ non nul mais accompagné d'une citation absente ou introuvable sera
+    de toute façon annulé par ``verify_sources``. Le considérer ici comme
+    récupérable permet aux règles OCR de le remplacer avant cette annulation.
+    La vérification finale côté serveur reste donc inchangée et stricte.
+    """
+    if not isinstance(field, dict) or field.get("value") in (None, ""):
+        return True
+    source = field.get("source")
+    quote = source.get("quote") if isinstance(source, dict) else None
+    page = source.get("page") if isinstance(source, dict) else None
+    normalized_quote = _normalized(quote)
+    if not normalized_quote or type(page) is not int:
+        return True
+
+    markers = list(re.finditer(r"\[PAGE\s+(\d+)\]", ocr_text, re.I))
+    if not markers:
+        return page != 1 or normalized_quote not in _normalized(ocr_text)
+    for index, marker in enumerate(markers):
+        if int(marker.group(1)) != page:
+            continue
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(ocr_text)
+        return normalized_quote not in _normalized(ocr_text[marker.end():end])
+    return True
+
+
+def _prepare_unverified_fields(data: Dict[str, Any], ocr_text: str) -> None:
+    """Libère les sorties LLM non prouvées afin que le fallback puisse agir."""
+    for name, field in list(data.items()):
+        if name == "document_type":
+            continue
+        if _source_is_recoverable(field, ocr_text):
+            _clear_invalid_field(data, name)
+
+
 def _page_number(text: str, position: int) -> int:
     pages = list(re.finditer(r"\[PAGE\s+(\d+)\]", text[:position], re.I))
     return int(pages[-1].group(1)) if pages else 1
@@ -324,6 +366,10 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
     """Complète uniquement les champs bulletin absents, sans écraser le LLM."""
 
     result = dict(data)
+    # Un champ LLM sans citation réellement présente dans l'OCR ne doit pas
+    # bloquer le secours : ValidationAgent le viderait quelques millisecondes
+    # plus tard. Les valeurs correctement sourcées restent prioritaires.
+    _prepare_unverified_fields(result, ocr_text)
     current_date = result.get("date_embauche")
     current_date_value = current_date.get("value") if isinstance(current_date, dict) else current_date
     if current_date_value is not None and not _valid_employment_date(current_date_value):
@@ -346,6 +392,40 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
     if labelled_identity:
         result["nom"] = _field(labelled_identity.group(1).upper(), text, labelled_identity, 0.90)
         result["prenom"] = _field(labelled_identity.group(2).title(), text, labelled_identity, 0.90)
+
+    # Formats marocains fréquents : « M | EL FILALI HAMZA » ou
+    # « M EL AICHOUNI MOHAMED ». Le préfixe EL/AL appartient au patronyme.
+    if _missing(result, "nom") or _missing(result, "prenom"):
+        moroccan_titled_identity = _search(
+            text,
+            r"\b(?:M|Mr|Monsieur)\s*\|?\s*"
+            r"((?:EL|AL)\s+[A-ZÀ-ÖØ-Þ'\-]{2,35})\s+"
+            r"([A-ZÀ-ÖØ-Þ'\-]{2,35}(?:\s+[A-ZÀ-ÖØ-Þ'\-]{2,35})?)"
+            r"(?=\s*(?:\||\d{1,4}\s+(?:LOT|RUE|AVENUE|BD\b)|"
+            r"TANGER\b|RABAT\b|CASABLANCA\b|AGADIR\b|TAZA\b))",
+        )
+        if moroccan_titled_identity:
+            if _missing(result, "nom"):
+                result["nom"] = _field(moroccan_titled_identity.group(1).upper(), text, moroccan_titled_identity, 0.88)
+            if _missing(result, "prenom"):
+                result["prenom"] = _field(moroccan_titled_identity.group(2).title(), text, moroccan_titled_identity, 0.88)
+
+    # Civilité + identité sur deux mots, avec prénom en casse normale :
+    # « Mme DAVID Nadine ».
+    if _missing(result, "nom") or _missing(result, "prenom"):
+        simple_titled_identity = _search(
+            text,
+            r"\b(?:Madame|Monsieur|Mlle|Mme|Mr)\s*\|?\s*"
+            r"([A-ZÀ-ÖØ-Þ'\-]{2,35})\s+"
+            r"([A-ZÀ-ÖØ-öø-ÿ'\-]{2,35})"
+            r"(?=\s*(?:\||\d{1,4}\s+(?:rue|avenue|place|route|lot|bd\b)|"
+            r"[A-Z]{2,}\s+\d{5}\b))",
+        )
+        if simple_titled_identity:
+            if _missing(result, "nom"):
+                result["nom"] = _field(simple_titled_identity.group(1).upper(), text, simple_titled_identity, 0.86)
+            if _missing(result, "prenom"):
+                result["prenom"] = _field(simple_titled_identity.group(2).title(), text, simple_titled_identity, 0.86)
 
     # Civilité + identité, fréquente sur les bulletins français :
     # « Mlle ASLAN DELPHINE ». Corrige aussi une sortie LLM qui place les
@@ -523,6 +603,43 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
             if _missing(result, "nom"):
                 result["nom"] = _field(" ".join(words[1:]).upper(), text, employee)
 
+    # Ligne compacte rencontrée sur les bulletins ONCF et assimilés :
+    # matricule | Prénom NOM | code/grade | fonction.
+    compact_employee = _search(
+        text,
+        r"\b(\d{3,8}[A-Z])\s*\|?\s*"
+        r"([A-ZÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,30})\s+"
+        r"([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'\-]{2,35})"
+        r"\s*\|\s*\d{2,6}\s*\|\s*([^|]{3,80})",
+    )
+    if compact_employee:
+        if _missing(result, "matricule"):
+            result["matricule"] = _field(compact_employee.group(1), text, compact_employee, 0.86)
+        if _missing(result, "prenom"):
+            result["prenom"] = _field(compact_employee.group(2).title(), text, compact_employee, 0.82)
+        if _missing(result, "nom"):
+            result["nom"] = _field(compact_employee.group(3).upper(), text, compact_employee, 0.82)
+        if _missing(result, "poste"):
+            result["poste"] = _field(compact_employee.group(4).strip(), text, compact_employee, 0.78)
+
+    # « EMPLOYÉ | 1008 ABASSI Youness » : la première valeur est le
+    # matricule, suivie du patronyme puis du prénom.
+    if _missing(result, "matricule") or _missing(result, "nom") or _missing(result, "prenom"):
+        employee_number_identity = _search(
+            text,
+            r"\bEMPLOY[ÉE]E?\s*\|?\s*(\d{2,8}[A-Z]?)\s+"
+            r"([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'\-]{1,35})\s+"
+            r"([A-ZÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,35})"
+            r"(?=\s*(?:\||Casablanca\b|Rabat\b|Tanger\b|Agadir\b))",
+        )
+        if employee_number_identity:
+            if _missing(result, "matricule"):
+                result["matricule"] = _field(employee_number_identity.group(1), text, employee_number_identity, 0.88)
+            if _missing(result, "nom"):
+                result["nom"] = _field(employee_number_identity.group(2).upper(), text, employee_number_identity, 0.84)
+            if _missing(result, "prenom"):
+                result["prenom"] = _field(employee_number_identity.group(3).title(), text, employee_number_identity, 0.84)
+
     if _missing(result, "matricule") or _missing(result, "nom"):
         interleaved_employee = _search(
             text,
@@ -676,6 +793,21 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
             r"(?=\s*\||\s+\d{1,4}\s*(?:rue|avenue|av\b))",
         )
         _put_match(result, "employeur", text, legal_employer)
+    if _missing(result, "employeur"):
+        # En-tête « KIABI | BULLETIN DE PAIE », « HUTCHINSON | ... », etc.
+        # La recherche reste limitée au début de la première page afin de ne
+        # jamais prendre le nom du salarié ou le signataire comme employeur.
+        first_page_header = text[:900]
+        brand_header = _search(
+            first_page_header,
+            r"(?:\[PAGE\s+1\]\s*)?"
+            r"([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ0-9.&'\- ]{2,50}?)"
+            r"\s*\|?\s*BULLETIN\s+DE\s+(?:PAIE|SALAIRE)\b",
+        )
+        if brand_header:
+            candidate = " ".join(brand_header.group(1).split()).strip(" |-:")
+            if candidate and candidate.upper() not in {"LE", "UN", "MON"}:
+                result["employeur"] = _field(candidate, first_page_header, brand_header, 0.72)
     if _missing(result, "employeur"):
         company_employee_grid = _search(
             text,
