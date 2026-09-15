@@ -44,6 +44,14 @@ def init_database():
                 created_at TEXT NOT NULL,
                 last_login_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS advisor_reviews (
+                customer_id TEXT PRIMARY KEY
+                REFERENCES customers(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'en_cours',
+                comment TEXT,
+                advisor_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS housing_projects (
                 customer_id TEXT PRIMARY KEY REFERENCES customers(id) ON DELETE CASCADE,
                 city TEXT,
@@ -224,5 +232,110 @@ def delete_all_documents(customer_id):
         )
     return [row["document_path"] for row in rows if row["document_path"]]
 
+ADVISOR_REVIEW_STATUSES = {
+    "en_cours",
+    "verifie",
+    "correction_demandee",
+}
 
+
+def list_customer_dossiers():
+    """Lister les clients et leurs projets sans données sensibles."""
+
+    with _connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                c.id,
+                c.email,
+                c.first_name,
+                c.last_name,
+                c.phone,
+                c.created_at,
+                c.last_login_at,
+                p.city,
+                p.property_type,
+                p.purchase_price,
+                p.contribution,
+                p.duration_years,
+                p.updated_at AS project_updated_at
+            FROM customers AS c
+            LEFT JOIN housing_projects AS p
+                ON p.customer_id = c.id
+            ORDER BY c.created_at DESC
+            """
+        ).fetchall()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+def load_advisor_review(customer_id):
+    """Charger la dernière décision du conseiller."""
+
+    with _connection() as connection:
+        row = connection.execute(
+            """
+            SELECT
+                customer_id,
+                status,
+                comment,
+                advisor_id,
+                updated_at
+            FROM advisor_reviews
+            WHERE customer_id = ?
+            """,
+            (customer_id,),
+        ).fetchone()
+
+    return dict(row) if row else None
+
+
+def save_advisor_review(
+    customer_id,
+    status,
+    comment,
+    advisor_id,
+):
+    """Enregistrer la décision humaine du conseiller."""
+
+    if status not in ADVISOR_REVIEW_STATUSES:
+        raise ValueError(
+            f"Statut conseiller invalide : {status}"
+        )
+
+    if not str(advisor_id or "").strip():
+        raise ValueError(
+            "L'identifiant du conseiller est obligatoire."
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    with _connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO advisor_reviews (
+                customer_id,
+                status,
+                comment,
+                advisor_id,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(customer_id) DO UPDATE SET
+                status = excluded.status,
+                comment = excluded.comment,
+                advisor_id = excluded.advisor_id,
+                updated_at = excluded.updated_at
+            """,
+            (
+                customer_id,
+                status,
+                str(comment or "").strip(),
+                str(advisor_id).strip(),
+                now,
+            ),
+        )
 init_database()

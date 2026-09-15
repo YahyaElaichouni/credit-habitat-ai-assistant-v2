@@ -18,7 +18,7 @@ def usable_native_text(text):
 
 
 class HybridReader:
-    def __init__(self, ocr_factory=None, dpi=300, max_ocr_side=2400):
+    def __init__(self, ocr_factory=None, dpi=200, max_ocr_side=2000):
         self._factory = ocr_factory
         self._ocr = None
         self.dpi = dpi

@@ -179,7 +179,7 @@ nom, prenom, employeur, matricule, poste, date_embauche,
 periode, salaire_base, salaire_brut, brut_imposable, total_retenues,
 salaire_net et devise.
 
-REGLES POUR LES BULLETINS MAROCAINS
+REGLES POUR LES BULLETINS FRANCAIS ET MAROCAINS
 
 ASSOCIATION DES LIBELLES (variantes possibles)
 
@@ -205,7 +205,8 @@ ASSOCIATION DES LIBELLES (variantes possibles)
   "Bulletin de paie 9/2023", "Janvier 2026", "Période du : ... au : ...".
   Une date d'édition, d'impression ou de paiement n'est pas la période.
 - salaire_base : "Salaire de base", "Salaire principal", "Traitement de
-  base", "Base mensuelle" ou "Salaire horaire" quand le bulletin est
+  base", "Traitement de base indiciaire", "Base mensuelle", "Salaire base
+  horaire" ou "Salaire horaire" quand le bulletin est
   explicitement horaire. Ne prends pas la colonne Base d'une cotisation.
 - salaire_brut : "Salaire brut", "Total brut", "Brut du mois",
   "Total gains" lorsque ce libellé représente clairement le brut courant.
@@ -218,6 +219,8 @@ ASSOCIATION DES LIBELLES (variantes possibles)
   individuelle (IR, CNSS, AMO, CIMR, mutuelle, avance ou prêt). Si le tableau
   sépare "Part salariale" et "Part patronale", total_retenues désigne seulement
   le total salarial retenu au salarié ; ignore la part patronale.
+  Si le document affiche séparément "Total des retenues déductibles" et
+  "Total des retenues non déductibles", leur somme constitue total_retenues.
 - salaire_net : "Salaire net", "Net à payer", "Net payé", "Net du mois",
   "Net imposable" SEULEMENT si le document l'utilise explicitement comme
   montant final ; sinon net imposable et net à payer sont différents.
@@ -240,6 +243,10 @@ D. source.quote doit contenir le libellé et la valeur. Si la citation ne
    permet pas de vérifier l'association, retourne null.
 E. Corrige seulement les séparateurs OCR évidents dans les nombres :
    "29 534,00" -> 29534.0. Ne reconstitue aucun chiffre manquant.
+F. Les intitulés de colonnes peuvent être suivis de leur ligne de valeurs :
+   par exemple Fonction/Département/Type salaire/Matricule puis
+   Conseiller/Production/Mensuel/103992. Associe chaque valeur à sa colonne,
+   sans la chercher immédiatement après son propre libellé.
 
 1. "Salaire net", "Net à payer" et "Net payé" peuvent désigner salaire_net.
    Prends uniquement le montant de la cellule associée.

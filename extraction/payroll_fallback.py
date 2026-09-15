@@ -1,4 +1,4 @@
-"""Secours déterministe pour les bulletins de paie marocains.
+"""Secours déterministe pour les bulletins de paie français et marocains.
 
 Le LLM reste l'extracteur principal. Ce module complète uniquement ses champs
 absents à partir de libellés explicitement présents dans l'OCR. Les confiances
@@ -40,6 +40,11 @@ def _field(value: Any, text: str, match: re.Match, confidence: float = FALLBACK_
 def _missing(data: Dict[str, Any], name: str) -> bool:
     current = data.get(name)
     return current is None or (isinstance(current, dict) and current.get("value") in (None, ""))
+
+
+def _value(data: Dict[str, Any], name: str) -> Any:
+    current = data.get(name)
+    return current.get("value") if isinstance(current, dict) else current
 
 
 def _clear_invalid_field(data: Dict[str, Any], name: str) -> None:
@@ -142,17 +147,54 @@ def _last_amount_on_labelled_line(
 
 def _salary_base_row(text: str) -> Optional[Tuple[float, re.Match]]:
     """Lit la cellule finale de Salaire de base, même sur un OCR aplati."""
+    salary_label = (
+        r"(?:(?:SALA(?:IRE|INE)|BALAIRE)\s+"
+        r"(?:PRINCIPAL|DE\s+BASE|BASE\s+HORAIRE|HORAIRE(?:\s+ANAPEC)?)|"
+        r"TRAITEMENT\s+DE\s+BASE(?:\s+INDICIAIRE)?)"
+    )
     result = _last_amount_on_labelled_line(
-        text, r"(?:SALA(?:IRE|INE)|BALAIRE)\s+(?:PRINCIPAL|DE\s+BASE|HORAIRE)"
+        text, salary_label
     )
     if result:
         return result
+
+    flattened = " ".join(text.split())
+    paired_codes = re.search(
+        rf"(?:\b\d{{1,3}}\s+)?\d{{2,4}}\s+{salary_label}\b\s*"
+        r"(-?\s*\d[\d ]*(?:[,.]\d{1,2}))"
+        r"(?=\s+\d{1,3}\s+\d{2,4}\s+[A-Za-zÀ-ÖØ-öø-ÿ])",
+        flattened,
+        re.I,
+    )
+    if paired_codes:
+        value = _signed_amount(paired_codes.group(1))
+        if value is not None:
+            return abs(value), paired_codes
+
+    # Tableaux avec numéro/rubrique : le prochain code marque sans ambiguïté
+    # la fin de la ligne, quelle que soit la banque ou l'entreprise.
+    coded = re.search(
+        rf"(?:\b\d{{1,5}}\s*\|\s*)?{salary_label}\b.*?"
+        r"(?=\s+\d{1,5}\s*\|\s*[A-Za-zÀ-ÖØ-öø-ÿ])",
+        flattened,
+        re.I,
+    )
+    if coded:
+        amounts = re.findall(
+            r"-?\s*\d+(?:[ \u00a0]\d{3})*(?:[,.]\d{1,4})", coded.group(0)
+        )
+        if amounts:
+            value = _signed_amount(amounts[-1])
+            if value is not None:
+                return abs(value), coded
+
     match = re.search(
-        r"(?:SALA(?:IRE|INE)|BALAIRE)\s+(?:PRINCIPAL|DE\s+BASE|HORAIRE)\b"
+        rf"{salary_label}\b"
         r".*?(?=\s+(?:Prime\b|Majoration\b|Heures?\s+suppl[ée]mentaires?\b|"
+        r"Jour\s+f[ée]ri[ée]\b|Montant\s+anciennet[ée]\b|Indemnit[ée]\b|"
         r"Cplt\b|Compl[ée]ment\b|Contr\s+Patr\b|Ret\s+Cong[ée]\b|"
-        r"Paiem?t\s+Cong[ée]\b|SALAIRE\s+BRUT\b))",
-        " ".join(text.split()),
+        r"Paiem?t\s+Cong[ée]\b|SALAIRE\s+BRUT\b|TOTAL\s+BRUT\b))",
+        flattened,
         re.I,
     )
     if not match:
@@ -211,6 +253,27 @@ def _fill_pay_totals(data: Dict[str, Any], text: str) -> None:
         if result and _missing(data, name):
             value, match = result
             data[name] = _field(value, text, match)
+
+
+def _fill_split_withholdings(data: Dict[str, Any], text: str) -> None:
+    """Additionne les totaux déductible et non déductible lorsqu'ils sont séparés."""
+    block = _search(
+        text,
+        r"Total\s+des\s+retenues\s+d[ée]ductibles\s*(?:\||:)?\s*"
+        r"(-?\s*\d[\d .]*(?:[,.]\d{1,2})).{0,120}?"
+        r"Total\s+des\s+retenues\s+non\s+d[ée]ductibles\s*(?:\||:)?\s*"
+        r"(-?\s*\d[\d .]*(?:[,.]\d{1,2}))",
+    )
+    if not block:
+        return
+    deductible = _amount(block.group(1))
+    non_deductible = _amount(block.group(2))
+    if deductible is None or non_deductible is None:
+        return
+    total = round(deductible + non_deductible, 2)
+    current = _value(data, "total_retenues")
+    if current in (None, deductible, non_deductible):
+        data["total_retenues"] = _field(total, text, block, confidence=0.82)
 
 
 def _fill_gross_from_earning_rows(data: Dict[str, Any], ocr_text: str) -> None:
@@ -273,13 +336,26 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
 
     text = " ".join(ocr_text.replace("\n", " ").split())
 
+    labelled_identity = _search(
+        text,
+        r"(?:Nom\s*(?:&|et)\s*Pr[ée]nom|Nom\s+complet)\s*:?[ ]*\|?[ ]*"
+        r"([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'\-]{1,34})\s+"
+        r"([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'\-]{1,34}(?:\s+[A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'\-]{1,34})?)"
+        r"(?=\s*(?:\||Adresse\b|Fonction\b|D[ée]partement\b))",
+    )
+    if labelled_identity:
+        result["nom"] = _field(labelled_identity.group(1).upper(), text, labelled_identity, 0.90)
+        result["prenom"] = _field(labelled_identity.group(2).title(), text, labelled_identity, 0.90)
+
     # Civilité + identité, fréquente sur les bulletins français :
     # « Mlle ASLAN DELPHINE ». Corrige aussi une sortie LLM qui place les
     # deux mots dans nom et laisse prenom vide.
     titled_identity = _search(
         text,
-        r"\b(?:M(?:I|L|l)le|Mme|Mr)\s+([A-ZÀ-ÖØ-Þ'\-]{2,35})\s+"
-        r"([A-ZÀ-ÖØ-Þ'\-]{2,35})(?=\s+\d+\s*(?:rue|avenue|av\b)|\s+[A-Z]{3}\s+\d{5}\b)",
+        r"\b(?:Madame|Monsieur|M(?:I|L|l)le|Mme|Mr|M)\s+"
+        r"([A-ZÀ-ÖØ-Þ'\-]{2,35})\s+([A-ZÀ-ÖØ-Þ'\-]{2,35})"
+        r"(?=\s+\d+\s*(?:rue|avenue|av\b|place|route|lot|hay)|"
+        r"\s+[A-Z]{3}\s+\d{5}\b)",
     )
     if titled_identity:
         current_nom = result.get("nom")
@@ -309,9 +385,16 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
                 result["nom"] = _field(surname.upper(), text, long_titled_identity, 0.66)
             if _missing(result, "prenom"):
                 result["prenom"] = _field(given_names.title(), text, long_titled_identity, 0.66)
+    exact_period = _search(
+        text,
+        r"P[ée]riode(?:\s+de\s+paie)?\s+du\s*:?\s*"
+        r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*(?:\|\s*)?au\s*:?\s*"
+        r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+    )
     period = _search(
         text,
-        r"(?:Bulletin\s+de\s+paie\s+(?:P[ée]riode\s*:?\s*)?|P[ée]riode\s*:?\s*)"
+        r"(?:Bulletin\s+de\s+paie\s+(?:P[ée]riode(?:\s+de\s+paie)?\s*:?\s*)?|"
+        r"P[ée]riode(?:\s+de\s+paie)?\s*:?\s*)"
         r"((?:\d{1,2}\s*/\s*\d{4})|(?:janvier|f[ée]vrier|mars|avril|mai|juin|"
         r"juillet|ao[ûu]t|septembre|octobre|novembre|d[ée]cembre)\s+\d{4})",
     )
@@ -334,12 +417,20 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
     if not period:
         period = _search(
             text,
-            r"P[ée]riode\s+du\s*:?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s*(?:\|\s*)?au\s*:?\s*"
+            r"P[ée]riode(?:\s+de\s+paie)?\s+du\s*:?\s*"
+            r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s*(?:\|\s*)?au\s*:?\s*"
             r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
         )
     # Une correspondance structurelle sûre prime sur la sortie LLM : elle
     # fournit une citation réellement présente, vérifiable par provenance.py.
     _put_match(result, "periode", text, period, replace=True)
+    if exact_period:
+        result["periode"] = _field(
+            f"{exact_period.group(1)} au {exact_period.group(2)}",
+            text,
+            exact_period,
+            confidence=0.92,
+        )
     # OCR très bruité : « P : 010524 ». On conserve seulement le mois/année
     # porté par la date de début, sans tenter de corriger une date de fin douteuse.
     if _missing(result, "periode"):
@@ -383,13 +474,21 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
             r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
         )
         _put_match(result, "date_embauche", text, dates_row, group=2, replace=True)
+    if _missing(result, "date_embauche"):
+        entry_row = _search(
+            text,
+            r"Date\s+(?:d['’]?\s*)?Entr[ée]e\s*\|\s*Date\s+Anciennet[ée]"
+            r".{0,260}?(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*\|\s*"
+            r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+        )
+        _put_match(result, "date_embauche", text, entry_row, group=1, replace=True)
     # Les en-têtes de colonnes peuvent être suivis de Fonction/Situation,
     # puis seulement de la ligne naissance | embauche | ancienneté. Cette
     # preuve déterministe remplace aussi une valeur LLM dotée d'une fausse
     # citation, afin qu'elle ne soit pas annulée lors du contrôle de provenance.
     aligned_dates = _search(
         text,
-        r"Date\s+naissance\s*\|\s*Date\s+(?:d['’]?\s*)?embauche\s*\|\s*"
+        r"Date\s+(?:de\s+)?naissance\s*\|\s*Date\s+(?:d['’]?\s*)?embauche\s*\|\s*"
         r"Date\s+anciennet[ée]\s*\|?.{0,220}?"
         r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*\|\s*"
         r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*\|\s*"
@@ -399,6 +498,18 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
         result["date_embauche"] = _field(
             aligned_dates.group(2), text, aligned_dates, confidence=0.72
         )
+    if _missing(result, "date_embauche"):
+        birth_hire_row = _search(
+            text,
+            r"Date\s+(?:de\s+)?Naissance\s*\|\s*Date\s+(?:d['’]?\s*)?embauche"
+            r"\s*\|\s*Anciennet[ée]\s*\|\s*Fonction.{0,160}?"
+            r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s*\|\s*"
+            r"(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})",
+        )
+        if birth_hire_row and _valid_employment_date(birth_hire_row.group(2)):
+            result["date_embauche"] = _field(
+                birth_hire_row.group(2), text, birth_hire_row, confidence=0.78
+            )
 
     # Format fréquent : matricule, nom du salarié, puis « Classe ».
     employee = _search(text, r"\b([0-9]{3,8}[A-Z]?)\s+([A-ZÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ' -]{2,60}?)\s+Classe\b")
@@ -435,6 +546,27 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
             text,
             _search(text, r"\bMATRICULE\s*:?[ ]*(\d{2,10}[A-Z]?)\b"),
         )
+    employee_grid = _search(
+        text,
+        r"Fonction\s*\|\s*D[ée]partement\s*\|\s*Type\s+Salaire\s*\|\s*Matricule"
+        r"\s+([^|]{2,60}?)\s*\|\s*[^|]*\|\s*[^|]*\|\s*(\d{2,10}[A-Z]?)"
+        r"(?=\s+Date\s+(?:d['’]?\s*)?Entr[ée]e|\s*$)",
+    )
+    if employee_grid:
+        if _missing(result, "poste"):
+            result["poste"] = _field(employee_grid.group(1).strip(), text, employee_grid, 0.82)
+        if _missing(result, "matricule"):
+            result["matricule"] = _field(employee_grid.group(2), text, employee_grid, 0.82)
+    public_service_grid = _search(
+        text,
+        r"MATRICULE\s*\|\s*SERVICE\s*\|\s*EMPLOI\s+"
+        r"([A-Z0-9._-]{3,20})\s*\|\s*([^|]{0,40})\|\s*([^|]{2,60})",
+    )
+    if public_service_grid:
+        if _missing(result, "matricule"):
+            result["matricule"] = _field(public_service_grid.group(1), text, public_service_grid, 0.76)
+        if _missing(result, "poste"):
+            result["poste"] = _field(public_service_grid.group(3).strip(), text, public_service_grid, 0.72)
     if _missing(result, "matricule"):
         table_matricule = _search(
             text,
@@ -460,10 +592,16 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
                 result["matricule"] = _field(labelled_employee.group(1), text, labelled_employee)
             words = labelled_employee.group(2).strip().split()
             if len(words) >= 2:
+                if len(words) >= 3 and words[0].upper() in {"EL", "AL"}:
+                    surname = " ".join(words[:2]).upper()
+                    given = " ".join(words[2:]).title()
+                else:
+                    surname = words[0].upper()
+                    given = " ".join(words[1:]).title()
                 if _missing(result, "nom"):
-                    result["nom"] = _field(words[0].upper(), text, labelled_employee)
+                    result["nom"] = _field(surname, text, labelled_employee)
                 if _missing(result, "prenom"):
-                    result["prenom"] = _field(" ".join(words[1:]).title(), text, labelled_employee)
+                    result["prenom"] = _field(given, text, labelled_employee)
 
     _put_match(
         result, "poste", text,
@@ -484,6 +622,30 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
             r"\s+(?:D[ée]partement|Qualification|N\s*[°º]?\s*SIRET)\b)",
         )
         _put_match(result, "poste", text, occupied_job)
+    if _missing(result, "poste"):
+        function_row = _search(
+            text,
+            r"Fonction\s*\|\s*D[ée]partement\s*\|\s*Type\s+Salaire\s*\|\s*Matricule"
+            r"\s+([^|]{2,60}?)\s*\|",
+        )
+        _put_match(result, "poste", text, function_row)
+    if _missing(result, "poste"):
+        function_with_family = _search(
+            text,
+            r"Fonction\s*\|\s*Situation\s+familiale.*?"
+            r"N[°º].{0,15}?C.{0,3}?I.{0,3}?N.{0,3}?\s+"
+            r"([^|]{2,60}?)\s*\|",
+        )
+        _put_match(result, "poste", text, function_with_family)
+    if _missing(result, "poste"):
+        dated_function_row = _search(
+            text,
+            r"Date\s+(?:de\s+)?Naissance\s*\|\s*Date\s+(?:d['’]?\s*)?embauche"
+            r".*?\|\s*Fonction\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s*\|\s*"
+            r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s*\|(?:\s*\|)?\s*"
+            r"([^|]{3,60}?)(?=\s+\d{1,5}\s*\|)",
+        )
+        _put_match(result, "poste", text, dated_function_row)
     if _missing(result, "poste"):
         split_job = _search(
             text,
@@ -514,6 +676,20 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
             r"(?=\s*\||\s+\d{1,4}\s*(?:rue|avenue|av\b))",
         )
         _put_match(result, "employeur", text, legal_employer)
+    if _missing(result, "employeur"):
+        company_employee_grid = _search(
+            text,
+            r"SOCI[ÉE]T[ÉE]\s*\|\s*EMPLOY[ÉE]\s+"
+            r"([^|]{2,80}?)\s*\|\s*\d{2,10}[A-Z]?\s+[A-ZÀ-ÖØ-öø-ÿ]",
+        )
+        _put_match(result, "employeur", text, company_employee_grid)
+    if _missing(result, "employeur"):
+        named_center = _search(
+            text,
+            r"\b([A-ZÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ&.' -]{2,70}"
+            r"(?:Contact\s+Center|Budget\s+g[ée]n[ée]ral))\b",
+        )
+        _put_match(result, "employeur", text, named_center)
 
     base_row = _salary_base_row(ocr_text)
     if base_row:
@@ -528,6 +704,7 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
             result["salaire_base"] = _field(base[0], text, base[1])
 
     _fill_pay_totals(result, text)
+    _fill_split_withholdings(result, text)
     _fill_gross_from_earning_rows(result, ocr_text)
 
     if _missing(result, "salaire_net"):
@@ -540,7 +717,11 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
                 if net_value is not None:
                     result["salaire_net"] = _field(net_value, text, net_block, confidence=0.62)
 
-    euro = _search(text, r"\bNet\s+pay[ée]\s*:?[ ]*\d[\d .]*[,.]\d{2}\s+euros?\b")
+    euro = _search(
+        text,
+        r"(?:\bNet\s+pay[ée]\s*:?[ ]*\d[\d .]*[,.]\d{2}\s+euros?\b|"
+        r"\d[\d .]*[,.]\d{2}\s*€)",
+    )
     if euro:
         result["devise"] = _field("EUR", text, euro, confidence=0.98)
 
@@ -580,8 +761,17 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
     if _missing(result, "devise") and any(
         not _missing(result, name) for name in ("salaire_base", "salaire_brut", "salaire_net")
     ):
-        salary_label = _search(text, r"SALAIRE\s+(?:PRINCIPAL|BRUT|NET)")
-        if salary_label:
-            result["devise"] = _field("MAD", text, salary_label, confidence=0.70)
+        explicit_mad = _search(text, r"\b(?:MAD|DHS?|DIRHAMS?\s+MAROCAINS?)\b")
+        france = _search(text, r"\b(?:FRA|FRANCE|SIRET|URSSAF|service-public\.fr|euros?)\b")
+        morocco = _search(
+            text,
+            r"\b(?:MAROC|RABAT|CASABLANCA|TANGER|AGADIR|TAZA|CNSS|AMO|RCAR|CNRA)\b",
+        )
+        if explicit_mad:
+            result["devise"] = _field("MAD", text, explicit_mad, confidence=0.96)
+        elif france:
+            result["devise"] = _field("EUR", text, france, confidence=0.76)
+        elif morocco:
+            result["devise"] = _field("MAD", text, morocco, confidence=0.72)
 
     return result

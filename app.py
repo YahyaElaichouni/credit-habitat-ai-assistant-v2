@@ -15,6 +15,7 @@ Tous les appels passent par Orchestrator afin de conserver
 un point d'entrée unique cohérent avec l'architecture du projet.
 """
 from ocr.scan_quality import analyze_document_quality
+import html
 import json
 import base64
 import logging
@@ -24,10 +25,14 @@ import pickle
 import hashlib
 from pathlib import Path
 from datetime import datetime
-
+from ui.advisor_dashboard import (
+    render_advisor_dashboard,
+    render_advisor_sidebar,
+)
 import streamlit as st
-import streamlit.components.v1 as components
+from dotenv import load_dotenv
 
+load_dotenv()
 from config.settings import settings
 from database import audit
 from database.customer_accounts import (
@@ -37,6 +42,7 @@ from database.customer_accounts import (
 from extraction.schema import DOCUMENT_SCHEMAS
 from ui.document_review import render_document_review
 from ui.simulation import render_simulation
+from ui.borrowing_capacity import render_borrowing_capacity
 from copy import deepcopy
 from ui.client_summary import (
     build_client_summary, render_client_summary, render_final_verification,
@@ -68,6 +74,7 @@ def get_orchestrator():
     """Créer l'orchestrator une seule fois (caché)"""
     from agents.orchestrator import Orchestrator
     return Orchestrator()
+
 @st.cache_data(show_spinner=False)
 def get_document_quality(file_content: bytes, filename: str):
     """Éviter de recalculer la qualité à chaque rerun Streamlit."""
@@ -377,6 +384,198 @@ def inject_app_styles():
             border-radius: 1rem;
             background: rgba(255,255,255,.88);
         }
+
+        /* ==================================================
+           FINITION PRODUIT — INTERFACE CLIENT
+           ================================================== */
+        [data-testid="stToolbar"],
+        [data-testid="stStatusWidget"],
+        #MainMenu,
+        footer {
+            display: none !important;
+        }
+        header[data-testid="stHeader"] {
+            background: transparent;
+        }
+        .block-container {
+            width: min(100%, 1320px);
+            max-width: 1320px;
+            padding: 1.65rem 2.3rem 4rem;
+        }
+        [data-testid="stSidebar"] {
+            min-width: 292px;
+            max-width: 292px;
+            background: #fbfcfb;
+            box-shadow: 10px 0 34px rgba(7, 59, 44, .045);
+        }
+        [data-testid="stSidebar"] > div:first-child {
+            padding: 1.15rem 1rem 1.15rem;
+        }
+        .st-key-sidebar_brand {
+            padding: 0 .2rem .9rem;
+        }
+        .st-key-sidebar_intro {
+            padding: .85rem .2rem .25rem;
+        }
+        .st-key-sidebar_intro h2 {
+            font-size: 1.25rem;
+        }
+        .st-key-sidebar_progress {
+            margin: .55rem 0 .9rem;
+            padding: .9rem;
+            border-radius: .85rem;
+            box-shadow: 0 4px 18px rgba(7, 59, 44, .04);
+        }
+        .sidebar-progress-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: .75rem;
+            margin-bottom: .65rem;
+            color: #173f32;
+            font-size: .82rem;
+            font-weight: 750;
+        }
+        .sidebar-progress-track {
+            height: 8px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: #e2ece7;
+        }
+        .sidebar-progress-fill {
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #08734e, #21a36f);
+        }
+        .sidebar-progress-copy {
+            margin-top: .6rem;
+            color: #667a71;
+            font-size: .76rem;
+            line-height: 1.35;
+        }
+        .st-key-sidebar_nav [data-testid="stButton"] {
+            margin-bottom: .12rem;
+        }
+        [data-testid="stSidebar"] .stButton > button {
+            min-height: 2.65rem;
+            border-radius: .65rem;
+            padding-inline: .75rem;
+            font-size: .9rem;
+        }
+        .sidebar-step-hint {
+            margin: -.2rem .65rem .45rem 2.55rem;
+            color: #7b8c84;
+            font-size: .71rem;
+        }
+        .sidebar-section-label {
+            margin: .8rem .25rem .35rem;
+            color: #819188;
+            font-size: .69rem;
+            font-weight: 800;
+            letter-spacing: .09em;
+        }
+        .st-key-sidebar_support {
+            margin-top: .7rem;
+            padding-top: .75rem;
+        }
+        .st-key-sidebar_profile {
+            margin-top: .7rem;
+            padding: .85rem .2rem 0;
+        }
+        .sidebar-user-card {
+            padding: .75rem .8rem;
+            border: 1px solid #dce8e2;
+            border-radius: .8rem;
+            background: #ffffff;
+        }
+        .sidebar-user-name {
+            overflow: hidden;
+            color: #173f32;
+            font-size: .86rem;
+            font-weight: 750;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .sidebar-user-email {
+            overflow: hidden;
+            margin-top: .18rem;
+            color: #74877e;
+            font-size: .72rem;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .ca-hero {
+            position: relative;
+            overflow: hidden;
+            padding: 2.2rem 2.35rem;
+            border-radius: 1.15rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 20px 48px rgba(7, 59, 44, .16);
+        }
+        .ca-hero::after {
+            content: "";
+            position: absolute;
+            width: 270px;
+            height: 270px;
+            right: -75px;
+            top: -120px;
+            border: 1px solid rgba(255,255,255,.16);
+            border-radius: 50%;
+            box-shadow: 0 0 0 44px rgba(255,255,255,.035),
+                        0 0 0 88px rgba(255,255,255,.025);
+        }
+        .ca-hero h1 {
+            max-width: 820px;
+            font-size: clamp(2rem, 3.2vw, 2.8rem);
+            line-height: 1.08;
+        }
+        .ca-hero p {
+            max-width: 760px;
+            font-size: 1rem;
+            line-height: 1.55;
+        }
+        .ca-hero .ca-tag {
+            margin-top: 1rem;
+            padding: .34rem .58rem;
+            border: 1px solid rgba(255,255,255,.2);
+            border-radius: 999px;
+            color: #ffffff;
+            background: rgba(255,255,255,.1);
+            font-size: .68rem;
+            letter-spacing: .04em;
+        }
+        .st-key-home_project_summary [data-testid="stVerticalBlockBorderWrapper"],
+        .st-key-home_primary_action [data-testid="stVerticalBlockBorderWrapper"],
+        .st-key-home_secondary_action [data-testid="stVerticalBlockBorderWrapper"] {
+            padding: .25rem .35rem;
+            border-radius: 1rem;
+            background: #ffffff;
+            box-shadow: 0 8px 26px rgba(7, 59, 44, .055);
+        }
+        .home-status-line {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            color: #08734e;
+            font-size: .79rem;
+            font-weight: 750;
+        }
+        .home-status-dot {
+            width: .5rem;
+            height: .5rem;
+            border-radius: 50%;
+            background: #16a36c;
+            box-shadow: 0 0 0 4px rgba(22,163,108,.11);
+        }
+        .ca-article {
+            min-height: 205px;
+            box-shadow: 0 7px 24px rgba(7,59,44,.055);
+        }
+        @media (max-width: 900px) {
+            .block-container {
+                padding-inline: 1rem;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -675,7 +874,7 @@ def render_offers_carousel():
         "__OFFERS_DATA__",
         json.dumps(offers, ensure_ascii=False),
     )
-    components.html(carousel_html, height=585, scrolling=False)
+    st.iframe(carousel_html, height=585)
 
 
 def render_header():
@@ -1155,6 +1354,7 @@ def render_application_sidebar():
     if account_ready:
         _, _, dossier_complete, _ = dossier_readiness()
     completed_steps = sum((project_ready, documents_ready, dossier_complete, dossier_complete))
+    progress_percent = int(completed_steps / 4 * 100)
 
     logo = Path("assets/logo_ca.jpg")
     with st.container(key="sidebar_brand"):
@@ -1172,8 +1372,6 @@ def render_application_sidebar():
         st.caption("Votre projet, étape par étape")
 
     with st.container(key="sidebar_progress"):
-        st.markdown("**Avancement de votre projet**")
-        st.progress(completed_steps / 4)
         if not account_ready:
             next_step = "Connectez-vous pour préparer votre dossier."
         elif not project_ready:
@@ -1184,17 +1382,24 @@ def render_application_sidebar():
             next_step = "Prochaine étape : vérifier vos informations."
         else:
             next_step = "Votre simulation est prête."
-        st.caption(next_step)
+        st.markdown(
+            f"""
+            <div class="sidebar-progress-head">
+                <span>Avancement du dossier</span>
+                <span>{progress_percent} %</span>
+            </div>
+            <div class="sidebar-progress-track">
+                <div class="sidebar-progress-fill" style="width:{progress_percent}%"></div>
+            </div>
+            <div class="sidebar-progress-copy">{next_step}</div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    if st.button("Faire une estimation rapide", key="sidebar_quick", width="stretch",
-                 icon=":material/calculate:", type="primary",
-                 disabled=st.session_state.processing):
-        _go_to("Estimation")
-        st.rerun()
-    st.caption("VOTRE PARCOURS")
+    st.markdown('<div class="sidebar-section-label">VOTRE PARCOURS</div>', unsafe_allow_html=True)
     with st.container(key="sidebar_nav"):
         if st.button(
-            "Accueil",
+            "01  Mon projet",
             icon=":material/home:",
             width="stretch",
             type="primary" if st.session_state.page == "Accueil" else "secondary",
@@ -1204,20 +1409,10 @@ def render_application_sidebar():
             _go_to("Accueil")
             st.rerun()
 
-        if st.button(
-            "1  Mon projet", icon=":material/home_work:", width="stretch",
-            disabled=st.session_state.processing or not account_ready,
-            key="sidebar_information",
-        ):
-            _go_to("Accueil")
-            st.rerun()
-        st.markdown(
-            f'<div class="sidebar-step-hint">{"Terminé" if project_ready else "À compléter"}</div>',
-            unsafe_allow_html=True,
-        )
+        
 
         if st.button(
-            "2  Mes justificatifs", icon=":material/description:", width="stretch",
+            "02  Mes justificatifs", icon=":material/description:", width="stretch",
             type="primary" if st.session_state.page == "Extraction" else "secondary",
             disabled=st.session_state.processing or not account_ready,
             key="sidebar_documents",
@@ -1233,7 +1428,7 @@ def render_application_sidebar():
         st.markdown(f'<div class="sidebar-step-hint">{documents_hint}</div>', unsafe_allow_html=True)
 
         if st.button(
-            "3  Vérifier mes informations", icon=":material/fact_check:", width="stretch",
+            "03  Vérifier mes informations", icon=":material/fact_check:", width="stretch",
             type="primary" if st.session_state.page == "Verification" else "secondary",
             disabled=st.session_state.processing or not documents_ready,
             key="sidebar_verification",
@@ -1246,7 +1441,7 @@ def render_application_sidebar():
         st.markdown(f'<div class="sidebar-step-hint">{verification_hint}</div>', unsafe_allow_html=True)
 
         if st.button(
-            "4  Voir ma simulation", icon=":material/calculate:", width="stretch",
+            "04  Ma simulation", icon=":material/calculate:", width="stretch",
             type="primary" if st.session_state.page == "Simulation" else "secondary",
             disabled=st.session_state.processing or not dossier_complete,
             key="sidebar_simulation",
@@ -1255,6 +1450,16 @@ def render_application_sidebar():
             st.rerun()
         simulation_hint = "Disponible" if dossier_complete else "Disponible après vérification"
         st.markdown(f'<div class="sidebar-step-hint">{simulation_hint}</div>', unsafe_allow_html=True)
+
+    if st.button(
+        "Estimation rapide",
+        key="sidebar_quick",
+        width="stretch",
+        icon=":material/calculate:",
+        disabled=st.session_state.processing,
+    ):
+        _go_to("Estimation")
+        st.rerun()
 
     with st.container(key="sidebar_support"):
         if st.button(
@@ -1268,23 +1473,36 @@ def render_application_sidebar():
         with st.expander("Confidentialité", icon=":material/shield:"):
             st.caption("Vos justificatifs servent uniquement à préparer votre simulation.")
             st.caption("Vous gardez le contrôle sur les informations enregistrées.")
-
+        if st.button(
+            "Espace conseiller",
+            icon=":material/admin_panel_settings:",
+            width="stretch",
+            key="open_advisor_space",
+        ):
+            st.session_state.page = "Conseiller"
+            st.rerun()
     if account_ready:
         profile = st.session_state.customer_profile
         display_name = " ".join(filter(None, (profile.get("prenom"), profile.get("nom")))).strip()
         initials = "".join(part[:1].upper() for part in display_name.split()[:2]) or "CL"
+        safe_display_name = html.escape(display_name or "Mon compte")
+        safe_email = html.escape(str(profile.get("email", "")))
         with st.container(key="sidebar_profile"):
-            identity_column, logout_column = st.columns([3.2, 1], vertical_alignment="center")
-            with identity_column:
-                st.markdown(f"**{initials} · {display_name or 'Mon compte'}**")
-                st.caption(profile.get("email", ""))
-            with logout_column:
-                logout = st.button(
-                    "Quitter",
-                    icon=":material/logout:",
-                    help="Se déconnecter",
-                    key="sidebar_logout",
-                )
+            st.markdown(
+                f"""
+                <div class="sidebar-user-card">
+                    <div class="sidebar-user-name">{initials} · {safe_display_name}</div>
+                    <div class="sidebar-user-email">{safe_email}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            logout = st.button(
+                "Se déconnecter",
+                icon=":material/logout:",
+                width="stretch",
+                key="sidebar_logout",
+            )
             if logout:
                 for key in (
                     "documents", "current_doc_id", "confirmed_fields", "last_result",
@@ -1619,6 +1837,11 @@ if "customer_profile" not in st.session_state:
 
 if "compromis_skipped" not in st.session_state:
     st.session_state.compromis_skipped = False
+if "advisor_authenticated" not in st.session_state:
+    st.session_state.advisor_authenticated = False
+
+if "advisor_username" not in st.session_state:
+    st.session_state.advisor_username = None
 
 # L'ancienne page de chat est remplacée par l'assistant permanent à droite.
 if st.session_state.page == "Assistant":
@@ -1630,14 +1853,19 @@ if st.session_state.page == "Assistant":
 
 inject_app_styles()
 
-with st.sidebar:
-    # Identifiant conservé uniquement pour l'audit interne.
-    advisor_id = f"client_portal_{st.session_state.session_id[:8]}"
-    render_application_sidebar()
+advisor_id = (
+    f"client_portal_"
+    f"{st.session_state.session_id[:8]}"
+)
 
-# L'assistant public est rendu avant le contenu protégé. Il reste donc
-# accessible sur la page de connexion et avant la création d'un compte.
-render_assistant_dock(advisor_id)
+with st.sidebar:
+    if st.session_state.page == "Conseiller":
+        render_advisor_sidebar()
+    else:
+        render_application_sidebar()
+
+if st.session_state.page != "Conseiller":
+    render_assistant_dock(advisor_id)
 
 # =========================================================
 # APPLICATION DU THÈME
@@ -1649,13 +1877,17 @@ render_assistant_dock(advisor_id)
 # RENDU DE L'EN-TÊTE
 # =========================================================
 
-render_header()
+if st.session_state.page != "Conseiller":
+    render_header()
 
 # =========================================================
 # PAGE ACCUEIL
 # =========================================================
 
-if st.session_state.page == "Accueil":
+if st.session_state.page == "Conseiller":
+    render_advisor_dashboard()
+
+elif st.session_state.page == "Accueil":
     if not st.session_state.account_created:
         st.markdown(
             """
@@ -1726,44 +1958,127 @@ if st.session_state.page == "Accueil":
                             st.rerun()
         st.stop()
 
-    client_badge = '<span class="ca-tag">SIMULATION PERSONNELLE ET NON CONTRACTUELLE</span>'
+    client_docs = current_client_documents()
+    completed_types = completed_document_types(client_docs)
+    required_types = {"carte_identite", "bulletin", "releve"}
+    completed_required = len(required_types & completed_types)
+    reviewed_types = reviewed_document_types(client_docs)
+    documents_ready = required_types.issubset(reviewed_types)
+    _, summary_rows, dossier_complete, missing_items = dossier_readiness()
+    saved_project = (
+        load_project(st.session_state.current_client_id)
+        or st.session_state.get("quick_project", {})
+    )
+
+    if dossier_complete:
+        hero_title = "Votre dossier est prêt pour la simulation."
+        hero_text = (
+            "Vos justificatifs et vos informations essentielles sont vérifiés. "
+            "Vous pouvez maintenant comparer plusieurs scénarios de financement."
+        )
+        hero_badge = "DOSSIER COMPLET · INFORMATIONS VÉRIFIÉES"
+    elif completed_required:
+        hero_title = "Reprenez votre projet là où vous l’avez laissé."
+        hero_text = (
+            "Votre dossier est sauvegardé. Finalisez les justificatifs et vérifiez "
+            "les informations détectées avant de lancer la simulation."
+        )
+        hero_badge = f"{completed_required}/3 JUSTIFICATIFS TRAITÉS"
+    else:
+        hero_title = "Construisez votre projet immobilier en toute simplicité."
+        hero_text = (
+            "Déposez vos justificatifs, contrôlez les informations détectées et "
+            "obtenez une estimation personnalisée de votre financement."
+        )
+        hero_badge = "PARCOURS SÉCURISÉ · VALIDATION PAR LE CLIENT"
+
     st.markdown(
         f"""
         <section class="ca-hero">
-            <div class="ca-eyebrow">CRÉDIT HABITAT · PARCOURS ASSISTÉ</div>
-            <h1>Construisez votre projet immobilier<br>en toute simplicité.</h1>
-            <p>Déposez vos justificatifs, vérifiez les informations détectées et obtenez
-            une première estimation de votre capacité de financement.</p>
-            {client_badge}
+            <div class="ca-eyebrow">CRÉDIT HABITAT · ESPACE PERSONNEL</div>
+            <h1>{hero_title}</h1>
+            <p>{hero_text}</p>
+            <span class="ca-tag">{hero_badge}</span>
         </section>
         """,
         unsafe_allow_html=True,
     )
 
-    saved_project = load_project(st.session_state.current_client_id) or st.session_state.get("quick_project", {})
-    with st.expander("Personnaliser mon projet habitat", expanded=False):
-        with st.form("housing_project_profile"):
-            project_left, project_right = st.columns(2)
-            city = project_left.text_input("Ville du projet", value=saved_project.get("city") or "")
-            property_options = ["Appartement", "Maison", "Terrain + construction", "Autre"]
-            saved_type = saved_project.get("property_type") or property_options[0]
-            property_type = project_right.selectbox(
-                "Type de bien", property_options,
-                index=property_options.index(saved_type) if saved_type in property_options else 0,
+    # -----------------------------------------------------
+    # SYNTHÈSE OU FORMULAIRE DU PROJET
+    # -----------------------------------------------------
+
+    editing_project = st.session_state.get("editing_home_project", False)
+
+    if saved_project and not editing_project:
+        with st.container(key="home_project_summary", border=True):
+            summary_title, summary_action = st.columns(
+                [4, 1], vertical_alignment="center"
             )
-            purchase_price = project_left.number_input(
-                "Budget estimé (MAD)", min_value=0.0,
-                value=float(saved_project.get("purchase_price") or 600000), step=10000.0,
+            with summary_title:
+                st.markdown("### Votre projet immobilier")
+                st.markdown(
+                    '<div class="home-status-line"><span class="home-status-dot"></span>'
+                    '<span>Projet enregistré</span></div>',
+                    unsafe_allow_html=True,
+                )
+            with summary_action:
+                if st.button(
+                    "Modifier", icon=":material/edit:", width="stretch",
+                    key="edit_home_project",
+                ):
+                    st.session_state.editing_home_project = True
+                    st.rerun()
+
+            project_metrics = st.columns(4)
+            project_metrics[0].metric(
+                "Ville", saved_project.get("city") or "À préciser", border=True
             )
-            contribution = project_right.number_input(
-                "Apport personnel (MAD)", min_value=0.0,
-                value=float(saved_project.get("contribution", 100000)), step=5000.0,
+            project_metrics[1].metric(
+                "Type de bien", saved_project.get("property_type") or "À préciser", border=True
             )
-            duration_years = st.slider(
-                "Durée souhaitée", 5, 30, int(saved_project.get("duration_years") or 20),
-                format="%d ans",
+            project_metrics[2].metric(
+                "Budget",
+                f"{float(saved_project.get('purchase_price') or 0):,.0f} MAD",
+                border=True,
             )
-            if st.form_submit_button("Enregistrer mon projet", type="primary", width="stretch"):
+            project_metrics[3].metric(
+                "Durée",
+                f"{int(saved_project.get('duration_years') or 20)} ans",
+                border=True,
+            )
+
+    if not saved_project or editing_project:
+        with st.container(key="home_project_summary", border=True):
+            st.markdown("### Personnaliser mon projet")
+            st.caption("Ces informations seront reprises automatiquement dans vos simulations.")
+            with st.form("housing_project_profile"):
+                project_left, project_right = st.columns(2)
+                city = project_left.text_input(
+                    "Ville du projet", value=saved_project.get("city") or ""
+                )
+                property_options = ["Appartement", "Maison", "Terrain + construction", "Autre"]
+                saved_type = saved_project.get("property_type") or property_options[0]
+                property_type = project_right.selectbox(
+                    "Type de bien", property_options,
+                    index=property_options.index(saved_type) if saved_type in property_options else 0,
+                )
+                purchase_price = project_left.number_input(
+                    "Budget estimé (MAD)", min_value=0.0,
+                    value=float(saved_project.get("purchase_price") or 600000), step=10000.0,
+                )
+                contribution = project_right.number_input(
+                    "Apport personnel (MAD)", min_value=0.0,
+                    value=float(saved_project.get("contribution") or 100000), step=5000.0,
+                )
+                duration_years = st.slider(
+                    "Durée souhaitée", 5, 30,
+                    int(saved_project.get("duration_years") or 20), format="%d ans",
+                )
+                save_project_button = st.form_submit_button(
+                    "Enregistrer mon projet", type="primary", width="stretch"
+                )
+            if save_project_button:
                 if contribution > purchase_price:
                     st.error("L'apport ne peut pas dépasser le prix estimé du bien.")
                 else:
@@ -1771,65 +2086,101 @@ if st.session_state.page == "Accueil":
                         st.session_state.current_client_id, city.strip(), property_type,
                         purchase_price, contribution, duration_years,
                     )
-                    st.success("Votre projet est enregistré dans votre compte.")
+                    st.session_state.editing_home_project = False
+                    st.toast("Votre projet est enregistré.", icon=":material/check_circle:")
+                    st.rerun()
+
+    # -----------------------------------------------------
+    # ACTIONS CONTEXTUELLES
+    # -----------------------------------------------------
+
+    if dossier_complete:
+        primary_title = "Votre simulation est disponible"
+        primary_text = "Consultez votre mensualité, votre capacité d’emprunt et comparez les durées."
+        primary_caption = "Données issues de vos informations vérifiées"
+        primary_label = "Voir ma simulation"
+        primary_icon = ":material/analytics:"
+        primary_page = "Simulation"
+    elif documents_ready:
+        primary_title = "Vérifier mes informations"
+        primary_text = "Contrôlez les informations essentielles extraites de vos justificatifs."
+        primary_caption = "Dernière étape avant votre simulation"
+        primary_label = "Continuer la vérification"
+        primary_icon = ":material/fact_check:"
+        primary_page = "Verification"
+    else:
+        primary_title = "Continuer mon dossier"
+        primary_text = "Ajoutez vos justificatifs pour obtenir une simulation personnalisée."
+        primary_caption = f"{completed_required}/3 justificatifs obligatoires traités"
+        primary_label = "Accéder à mes justificatifs"
+        primary_icon = ":material/upload_file:"
+        primary_page = "Extraction"
 
     action_left, action_right = st.columns(2, gap="large")
     with action_left:
-        with st.container(key="home_offer_card", border=True, height="stretch"):
-            st.markdown("### Préparer mon dossier")
-            st.write(
-                "Ajoutez vos justificatifs pour obtenir une simulation basée sur "
-                "votre situation personnelle."
-            )
-            st.caption("Carte d’identité · Bulletin de paie · Relevé bancaire")
+        with st.container(key="home_primary_action", border=True, height="stretch"):
+            st.markdown(f"### {primary_title}")
+            st.write(primary_text)
+            st.caption(primary_caption)
             if st.button(
-                "Commencer avec mes documents",
-                icon=":material/arrow_forward:", type="primary", width="stretch",
-                disabled=st.session_state.processing, key="home_start_documents",
+                primary_label, icon=primary_icon, type="primary", width="stretch",
+                disabled=st.session_state.processing, key="home_primary_action_button",
             ):
-                st.session_state.page = "Extraction"
+                st.session_state.page = primary_page
                 st.rerun()
 
     with action_right:
-        with st.container(key="home_estimate_card", border=True, height="stretch"):
-            st.markdown("### Estimer ma mensualité")
+        with st.container(key="home_secondary_action", border=True, height="stretch"):
+            st.markdown("### Explorer une autre hypothèse")
             st.write(
-                "Obtenez immédiatement une première estimation à partir du prix, "
-                "de votre apport et de la durée souhaitée."
+                "Estimez une mensualité, calculez votre capacité d’emprunt "
+                "ou comparez plusieurs durées."
             )
-            st.caption("Rapide · Sans justificatif · Sans engagement")
+            st.caption("Calcul immédiat · Modifiable · Non contractuel")
             if st.button(
-                "Faire une estimation rapide",
-                icon=":material/calculate:", type="primary", width="stretch",
-                disabled=st.session_state.processing, key="home_quick",
+                "Ouvrir les outils de simulation", icon=":material/calculate:",
+                width="stretch", disabled=st.session_state.processing, key="home_quick",
             ):
                 st.session_state.page = "Estimation"
                 st.rerun()
 
-    st.markdown('<div class="ca-section-title">À découvrir</div>', unsafe_allow_html=True)
-    st.caption("Des repères simples pour mieux comprendre le parcours et préparer le projet immobilier.")
-    article_1, article_2, article_3 = st.columns(3, gap="medium")
-    with article_1:
-        render_article_card(
-            "🏠",
-            "Bien préparer son projet habitat",
-            "Budget, apport, durée et mensualité : les points à clarifier avant de constituer un dossier.",
-            "GUIDE PRATIQUE",
-        )
-    with article_2:
-        render_article_card(
-            "📄",
-            "Les pièces à fournir",
-            "Découvrez les justificatifs utiles et pourquoi leur lisibilité accélère l'étude du financement.",
-            "DOSSIER CLIENT",
-        )
-    with article_3:
-        render_article_card(
-            "🛡️",
-            "Comprendre l'étude du dossier",
-            "Découvrez comment vos revenus, vos charges et votre apport influencent une simulation.",
-            "TRANSPARENCE",
-        )
+    # -----------------------------------------------------
+    # ÉTAT DU DOSSIER
+    # -----------------------------------------------------
+
+    st.markdown('<div class="ca-section-title">État de votre dossier</div>', unsafe_allow_html=True)
+    st.caption("Une vue synthétique des éléments nécessaires à votre simulation personnalisée.")
+    status_columns = st.columns(3, gap="medium")
+
+    with status_columns[0]:
+        with st.container(border=True, height="stretch"):
+            st.caption("PROJET IMMOBILIER")
+            st.markdown("### " + ("Renseigné" if saved_project else "À compléter"))
+            st.write(
+                "Votre budget, votre apport et la durée sont enregistrés."
+                if saved_project else
+                "Renseignez les caractéristiques principales de votre projet."
+            )
+
+    with status_columns[1]:
+        with st.container(border=True, height="stretch"):
+            st.caption("JUSTIFICATIFS")
+            st.markdown(f"### {completed_required} sur 3")
+            st.write(
+                "Les trois justificatifs obligatoires ont été analysés."
+                if completed_required == 3 else
+                f"Il reste {3 - completed_required} justificatif(s) obligatoire(s) à traiter."
+            )
+
+    with status_columns[2]:
+        with st.container(border=True, height="stretch"):
+            st.caption("VÉRIFICATION")
+            st.markdown("### " + ("Terminée" if dossier_complete else "En attente"))
+            st.write(
+                "Les informations indispensables sont confirmées."
+                if dossier_complete else
+                "La simulation personnalisée sera disponible après vérification."
+            )
 
     with st.container(key="home_help_banner", border=True):
         help_text, help_action = st.columns([3.4, 1], vertical_alignment="center")
@@ -1846,17 +2197,6 @@ if st.session_state.page == "Accueil":
             ):
                 st.session_state.assistant_open = True
                 st.rerun()
-
-    st.markdown('<div class="ca-section-title">Activité de la session</div>', unsafe_allow_html=True)
-    docs = st.session_state.documents
-    cols = st.columns(3)
-    cols[0].metric("Documents déposés", len(docs), border=True)
-    cols[1].metric(
-        "Analyses terminées",
-        sum(d.get("status") == "completed" for d in docs.values()),
-        border=True,
-    )
-    cols[2].metric("Questions posées", len(st.session_state.chat_history), border=True)
 
     with st.container(border=True):
         st.markdown("**Une estimation pour mieux vous orienter**")
@@ -2317,36 +2657,142 @@ elif st.session_state.page == "Verification":
 # =========================================================
 
 elif st.session_state.page == "Estimation":
-    st.title("Estimer ma mensualité")
-    st.caption("Aucun compte ni justificatif nécessaire pour cette première estimation.")
-    estimate = render_simulation(key_prefix="quick")
-    if st.button("Affiner avec mes documents", type="primary", key="quick_refine"):
+    st.title("Préparer mon projet habitat")
+
+    st.caption(
+        "Estimez votre mensualité ou découvrez votre "
+        "capacité d'emprunt, sans compte ni justificatif."
+    )
+
+    simulation_tab, capacity_tab = st.tabs([
+        "Estimer ma mensualité",
+        "Calculer ma capacité d'emprunt",
+    ])
+
+    estimate = None
+
+    with simulation_tab:
+        estimate = render_simulation(
+            key_prefix="quick"
+        )
+
+    with capacity_tab:
+        render_borrowing_capacity(
+            project=st.session_state.get(
+                "quick_project",
+                {},
+            ),
+            key_prefix="quick_capacity",
+        )
+
+    if st.button(
+        "Affiner avec mes documents",
+        type="primary",
+        key="quick_refine",
+        width="stretch",
+    ):
         if estimate:
             st.session_state.quick_project = estimate
-        st.session_state.page = "Extraction" if st.session_state.account_created else "Accueil"
+
+        st.session_state.page = (
+            "Extraction"
+            if st.session_state.account_created
+            else "Accueil"
+        )
+
         st.rerun()
 
 elif st.session_state.page == "Simulation":
     if not st.session_state.account_created:
         st.session_state.page = "Estimation"
         st.rerun()
+
     client_docs, _, dossier_complete, _ = dossier_readiness()
+
     if not dossier_complete:
         st.session_state.page = "Verification"
         st.rerun()
+
     st.title("Ma simulation de crédit habitat")
-    saved_project = load_project(st.session_state.current_client_id) or st.session_state.get("quick_project", {})
-    estimate = render_simulation(saved_project, key_prefix=f"simulation_{st.session_state.current_client_id}")
+
+    st.caption(
+        "Simulez votre crédit et comparez plusieurs durées "
+        "avant de choisir le scénario adapté à votre projet."
+    )
+
+    saved_project = (
+        load_project(st.session_state.current_client_id)
+        or st.session_state.get("quick_project", {})
+    )
+
     rows, _ = build_client_summary(client_docs)
-    confirmed = {row["field"]: row["Valeur confirmée"] for row in rows if row["Statut"] == "Confirmé"}
-    income = float(confirmed["salaire_net"]) + float(confirmed["revenus_complementaires"])
-    if estimate and income > 0:
-        ratio = (float(confirmed["charge_mensuelle_credits"]) + estimate["monthly_payment"]) / income
-        st.metric("Taux d'endettement estimé", f"{ratio:.2%}")
-    with st.expander("Ma situation vérifiée"):
+
+    confirmed = {
+        row["field"]: row["Valeur confirmée"]
+        for row in rows
+        if row["Statut"] == "Confirmé"
+    }
+
+    def confirmed_number(field_name):
+        try:
+            return float(
+                confirmed.get(field_name) or 0
+            )
+        except (TypeError, ValueError):
+            return 0.0
+
+    income = (
+        confirmed_number("salaire_net")
+        + confirmed_number("revenus_complementaires")
+    )
+
+    existing_charges = confirmed_number(
+        "charge_mensuelle_credits"
+    )
+
+    simulation_tab, capacity_tab = st.tabs([
+    "Simuler ma mensualité",
+    "Ma capacité d'emprunt",
+])
+
+    estimate = None
+    capacity = None
+
+    with simulation_tab:
+         estimate = render_simulation(
+        project=saved_project,
+        key_prefix=(
+            f"simulation_"
+            f"{st.session_state.current_client_id}"
+        ),
+        income=income,
+        existing_monthly_charges=existing_charges,
+    )
+
+    with capacity_tab:
+         capacity = render_borrowing_capacity(
+        project=saved_project,
+        key_prefix=(
+            f"capacity_"
+            f"{st.session_state.current_client_id}"
+        ),
+        income=income,
+        existing_monthly_charges=existing_charges,
+    )
+    with st.expander(
+        "Ma situation vérifiée"
+    ):
         for row in rows:
-            st.write(f"{row['Champ']} : {row['Valeur confirmée']}")
-    if st.button("Modifier ma situation", key="simulation_edit"):
+            st.write(
+                f"{row['Champ']} : "
+                f"{row['Valeur confirmée']}"
+            )
+
+    if st.button(
+        "Modifier ma situation",
+        key="simulation_edit",
+        icon=":material/edit:",
+    ):
         st.session_state.page = "Verification"
         st.rerun()
 
