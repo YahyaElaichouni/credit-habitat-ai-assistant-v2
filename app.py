@@ -62,7 +62,7 @@ st.set_page_config(
     page_title="Crédit Habitat — Assistant IA",
     page_icon="🏦",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # =========================================================
@@ -576,6 +576,583 @@ def inject_app_styles():
                 padding-inline: 1rem;
             }
         }
+
+        /* ==================================================
+           IDENTITÉ INSTITUTIONNELLE GCAM
+           Inspirée du site officiel, adaptée au parcours crédit
+           ================================================== */
+        :root {
+            --cam-forest: #173e24;
+            --cam-forest-deep: #102f1b;
+            --cam-green: #159447;
+            --cam-lime: #8bcf31;
+            --cam-red: #e5242a;
+            --cam-ink: #202824;
+            --cam-muted: #65736b;
+            --cam-line: #dde4df;
+            --cam-surface: #ffffff;
+        }
+        html, body, [class*="css"] {
+            font-family: Arial, Helvetica, sans-serif;
+        }
+        .stApp {
+            color: var(--cam-ink);
+            background: #ffffff;
+        }
+        header[data-testid="stHeader"] {
+            height: 0 !important;
+            min-height: 0 !important;
+            background: transparent;
+        }
+        [data-testid="stSidebar"],
+        [data-testid="collapsedControl"],
+        [data-testid="stSidebarCollapsedControl"] {
+            display: none !important;
+        }
+        .block-container {
+            width: 100%;
+            max-width: none;
+            padding-top: 1rem;
+            padding-right: clamp(1rem, 3vw, 3.5rem);
+            padding-left: clamp(1rem, 3vw, 3.5rem);
+        }
+        .cam-site-header {
+            margin-bottom: 0;
+        }
+        .cam-utility-bar {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 1.25rem;
+            min-height: 2.35rem;
+            padding: .35rem 1.1rem;
+            color: #ffffff;
+            background: var(--cam-forest-deep);
+            font-size: .74rem;
+            letter-spacing: .05em;
+        }
+        .cam-universe {
+            padding: .45rem 1.05rem;
+            border-radius: 0 0 1rem 1rem;
+            background: linear-gradient(90deg, #69b92e, var(--cam-lime));
+            font-weight: 750;
+        }
+        .cam-secure {
+            display: inline-flex;
+            align-items: center;
+            gap: .4rem;
+            padding: .34rem .78rem;
+            border: 1px solid rgba(255,255,255,.55);
+            border-radius: 999px;
+        }
+        .cam-main-nav {
+            display: flex;
+            align-items: center;
+            min-height: 5.7rem;
+            padding: .75rem 1.45rem;
+            border: 1px solid #e3e6e4;
+            background: #ffffff;
+            box-shadow: 0 10px 30px rgba(16,47,27,.08);
+        }
+        .cam-product-title {
+            margin-left: auto;
+            color: var(--cam-forest);
+            font-family: "Arial Narrow", Arial, sans-serif;
+            font-size: 1.05rem;
+            font-weight: 800;
+            letter-spacing: .08em;
+        }
+        .cam-brand {
+            display: flex;
+            align-items: center;
+            gap: .85rem;
+            min-width: 250px;
+            padding-right: 1.25rem;
+        }
+        .cam-brand img {
+            width: 145px;
+            max-height: 62px;
+            object-fit: contain;
+        }
+        .cam-brand-fallback {
+            color: var(--cam-forest);
+            font-size: .92rem;
+            font-weight: 800;
+            line-height: 1.15;
+        }
+        .cam-nav-items {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 0;
+            width: 100%;
+        }
+        .cam-nav-item {
+            padding: .42rem 1rem;
+            border-right: 1px solid #e2e5e3;
+            color: #1c251f;
+            font-family: "Arial Narrow", Arial, sans-serif;
+            font-size: .77rem;
+            font-weight: 800;
+            letter-spacing: .035em;
+            white-space: nowrap;
+        }
+        .cam-nav-item.is-active {
+            color: var(--cam-green);
+        }
+        .cam-nav-space {
+            margin-left: 1.1rem;
+            padding: .72rem 1rem;
+            border-radius: 999px;
+            color: #ffffff;
+            background: linear-gradient(105deg, #24995d, #94dc44);
+            font-size: .76rem;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+        .cam-breadcrumb {
+            padding: .7rem .2rem 0;
+            color: #708078;
+            font-size: .72rem;
+        }
+        .cam-breadcrumb strong {
+            color: var(--cam-forest);
+        }
+        .st-key-cam_top_navigation {
+            margin-top: -1px;
+            padding: .55rem .7rem;
+            border: 1px solid #e3e6e4;
+            background: #ffffff;
+            box-shadow: 0 12px 30px rgba(16,47,27,.06);
+        }
+        .st-key-cam_top_navigation [data-testid="stHorizontalBlock"] {
+            align-items: center;
+            gap: .2rem;
+        }
+        .st-key-cam_top_navigation .stButton > button,
+        .st-key-cam_top_navigation [data-testid="stPopover"] > button {
+            min-height: 2.9rem;
+            border: 0;
+            border-right: 1px solid #e5e8e6;
+            border-radius: 0;
+            color: #243029;
+            background: #ffffff;
+            box-shadow: none;
+            font-family: "Arial Narrow", Arial, sans-serif;
+            font-size: .76rem;
+            font-weight: 800;
+            letter-spacing: .025em;
+            white-space: nowrap;
+        }
+        .st-key-cam_top_navigation .stButton > button:hover,
+        .st-key-cam_top_navigation [data-testid="stPopover"] > button:hover {
+            color: var(--cam-green);
+            background: #f3f9f5;
+        }
+        .st-key-cam_top_navigation .stButton > button[kind="primary"] {
+            color: var(--cam-green);
+            border-bottom: 2px solid var(--cam-red);
+            background: #f3f9f5;
+        }
+        .st-key-cam_top_navigation [data-testid="stPopover"] > button {
+            border-right: 0;
+            border-radius: 999px;
+            color: #ffffff;
+            background: linear-gradient(105deg, #24995d, #94dc44);
+        }
+        .st-key-top_nav_logo button {
+            min-height: 4.25rem !important;
+            border-right: 1px solid #e2e5e3 !important;
+            background-color: #ffffff !important;
+            background-position: left center !important;
+            background-repeat: no-repeat !important;
+            background-size: contain !important;
+            box-shadow: none !important;
+        }
+        .st-key-top_nav_logo button:hover {
+            background-color: #f8faf8 !important;
+        }
+        .cam-space-profile {
+            margin-bottom: .8rem;
+            padding: .75rem .8rem;
+            border: 1px solid var(--cam-line);
+            background: #f8faf8;
+        }
+        .cam-space-name {
+            color: var(--cam-forest);
+            font-weight: 800;
+        }
+        .cam-space-email {
+            margin-top: .15rem;
+            color: var(--cam-muted);
+            font-size: .78rem;
+        }
+        .cam-space-progress {
+            margin: .25rem 0 .55rem;
+            color: var(--cam-muted);
+            font-size: .78rem;
+        }
+        .ca-hero {
+            isolation: isolate;
+            min-height: 330px;
+            display: flex;
+            align-items: center;
+            padding: 3.5rem 3.25rem;
+            border-radius: .15rem;
+            background-image:
+                linear-gradient(90deg, rgba(16,47,27,.96) 0%, rgba(23,62,36,.90) 48%, rgba(23,62,36,.48) 100%),
+                var(--cam-hero-image, linear-gradient(120deg, #102f1b, #225e36));
+            background-position: center;
+            background-size: cover;
+            box-shadow: none;
+        }
+        .ca-hero::after {
+            display: none;
+        }
+        .ca-hero-content {
+            position: relative;
+            z-index: 1;
+            max-width: 790px;
+        }
+        .ca-eyebrow {
+            color: #b7e879;
+            font-size: .72rem;
+            letter-spacing: .16em;
+            opacity: 1;
+        }
+        .ca-hero h1 {
+            margin-top: .65rem;
+            color: #ffffff;
+            font-family: "Arial Narrow", Arial, sans-serif;
+            font-size: clamp(2.25rem, 4.5vw, 3.75rem);
+            font-weight: 400;
+            letter-spacing: .015em;
+            line-height: 1.05;
+            text-transform: uppercase;
+        }
+        .ca-hero p {
+            max-width: 720px;
+            margin-top: 1.15rem;
+            color: rgba(255,255,255,.92);
+            font-size: 1rem;
+            line-height: 1.65;
+        }
+        .ca-hero .ca-tag {
+            margin-top: 1.4rem;
+            padding: 0 0 .35rem;
+            border: 0;
+            border-bottom: 2px solid var(--cam-red);
+            border-radius: 0;
+            color: #ffffff;
+            background: transparent;
+        }
+        .ca-section-title {
+            margin-top: 2.8rem;
+            color: #1f2722;
+            font-family: "Arial Narrow", Arial, sans-serif;
+            font-size: 1.8rem;
+            font-weight: 400;
+            letter-spacing: .025em;
+            text-align: center;
+            text-transform: uppercase;
+        }
+        .ca-section-title::after {
+            content: "";
+            display: block;
+            width: 48px;
+            height: 2px;
+            margin: .9rem auto 1.2rem;
+            background: var(--cam-red);
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"],
+        div[data-testid="stMetric"] {
+            border-color: var(--cam-line);
+            border-radius: .25rem;
+            background: #ffffff;
+            box-shadow: none;
+        }
+        .stButton > button,
+        .stFormSubmitButton > button {
+            min-height: 2.85rem;
+            border-radius: 999px;
+            font-weight: 750;
+        }
+        .stButton > button[kind="primary"],
+        .stFormSubmitButton > button[kind="primary"] {
+            border-color: transparent;
+            background: linear-gradient(105deg, #187f4f, #77c83a);
+            box-shadow: 0 8px 18px rgba(24,127,79,.17);
+        }
+        .stButton > button[kind="primary"]:hover,
+        .stFormSubmitButton > button[kind="primary"]:hover {
+            border-color: transparent;
+            background: linear-gradient(105deg, #126b42, #69ba31);
+        }
+        [data-baseweb="tab-list"] {
+            gap: .35rem;
+            border-bottom: 1px solid var(--cam-line);
+        }
+        [data-baseweb="tab"] {
+            border-radius: .2rem .2rem 0 0;
+            font-weight: 700;
+        }
+        [aria-selected="true"][data-baseweb="tab"] {
+            color: var(--cam-green);
+            border-bottom-color: var(--cam-red);
+        }
+        [data-testid="stSidebar"] {
+            border-top: .45rem solid var(--cam-lime);
+            border-right: 1px solid var(--cam-line);
+            background: #f8faf8;
+            box-shadow: 6px 0 24px rgba(16,47,27,.045);
+        }
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+            border-radius: .25rem;
+            background: var(--cam-forest);
+            box-shadow: none;
+        }
+        [data-testid="stSidebar"] .stButton > button {
+            border-radius: .25rem;
+        }
+        .sidebar-progress-fill {
+            background: linear-gradient(90deg, var(--cam-green), var(--cam-lime));
+        }
+        .st-key-assistant_launcher button {
+            border-radius: 999px;
+            background: linear-gradient(105deg, var(--cam-forest), var(--cam-green));
+        }
+        @media (max-width: 1050px) {
+            .cam-brand { min-width: 190px; }
+            .cam-brand img { width: 125px; }
+            .cam-nav-item { padding-inline: .55rem; font-size: .68rem; }
+            .cam-nav-space { margin-left: .55rem; }
+        }
+        @media (max-width: 760px) {
+            .cam-utility-bar { justify-content: space-between; }
+            .cam-breadcrumb { display: none; }
+            .st-key-cam_top_navigation [data-testid="stHorizontalBlock"] {
+                overflow-x: auto;
+                flex-wrap: nowrap;
+            }
+            .st-key-cam_top_navigation [data-testid="column"] {
+                min-width: 135px;
+            }
+            .st-key-cam_top_navigation [data-testid="column"]:first-child {
+                min-width: 180px;
+            }
+            .ca-hero { min-height: 280px; padding: 2.5rem 1.35rem; }
+            .ca-hero h1 { font-size: 2.05rem; }
+        }
+
+        /* ==================================================
+           EN-TÊTE ET BANNIÈRE — FINITION INSTITUTIONNELLE
+           ================================================== */
+        .cam-utility-bar {
+            justify-content: space-between;
+            min-height: 2.7rem;
+            padding: 0 1.25rem;
+            background: #10351f;
+        }
+        .cam-corporate {
+            color: rgba(255,255,255,.78);
+            font-size: .68rem;
+            font-weight: 700;
+            letter-spacing: .095em;
+        }
+        .cam-utility-actions {
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+        }
+        .cam-universe {
+            padding: .52rem .95rem;
+            border-radius: 0 0 .9rem .9rem;
+            box-shadow: 0 4px 12px rgba(0,0,0,.08);
+        }
+        .cam-secure {
+            padding: .38rem .78rem;
+            font-size: .67rem;
+        }
+        .st-key-cam_top_navigation {
+            padding: .42rem 1rem;
+            border: 1px solid #e6ebe8;
+            box-shadow: 0 12px 32px rgba(16,53,31,.07);
+        }
+        .st-key-cam_top_navigation [data-testid="stHorizontalBlock"] {
+            min-height: 4.65rem;
+        }
+        .st-key-cam_top_navigation .stButton > button,
+        .st-key-cam_top_navigation [data-testid="stPopover"] button {
+            min-height: 3.35rem;
+            padding-inline: .7rem;
+            font-size: .72rem;
+            letter-spacing: .04em;
+        }
+        .st-key-cam_top_navigation .stButton > button[kind="primary"] {
+            color: #118c49;
+            border-bottom: 2px solid var(--cam-red);
+            background: linear-gradient(180deg, #ffffff, #f4faf6);
+        }
+        .st-key-cam_top_navigation [data-testid="column"]:last-child
+        [data-testid="stPopover"] button {
+            border: 0;
+            border-radius: 999px;
+            color: #ffffff;
+            background: linear-gradient(105deg, #208f55, #83cf38);
+            box-shadow: 0 8px 20px rgba(32,143,85,.18);
+        }
+        .st-key-top_nav_logo button {
+            justify-content: flex-start;
+            min-height: 4.4rem !important;
+            padding-left: 5.2rem !important;
+            color: #173e24 !important;
+            font-family: Arial, Helvetica, sans-serif !important;
+            font-size: .72rem !important;
+            font-weight: 800 !important;
+            line-height: 1.15 !important;
+            letter-spacing: .025em !important;
+            text-align: left !important;
+        }
+        .st-key-top_nav_logo button p {
+            max-width: 125px;
+            white-space: normal;
+        }
+        .cam-breadcrumb {
+            padding: .85rem .15rem .55rem;
+            color: #7a8980;
+            font-size: .7rem;
+        }
+        .ca-hero {
+            min-height: 390px;
+            padding: 2.75rem 3rem;
+            border-radius: .2rem;
+            background-image:
+                radial-gradient(circle at 86% 18%, rgba(139,207,49,.22), transparent 21rem),
+                linear-gradient(105deg, rgba(13,50,29,.98) 0%, rgba(20,76,42,.97) 58%, rgba(25,102,55,.92) 100%),
+                var(--cam-hero-image, linear-gradient(120deg, #102f1b, #225e36));
+            box-shadow: 0 18px 45px rgba(16,53,31,.12);
+        }
+        .cam-hero-grid {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: minmax(0, 1.35fr) minmax(310px, .65fr);
+            align-items: center;
+            gap: clamp(2rem, 5vw, 5rem);
+            width: 100%;
+        }
+        .ca-hero-content {
+            max-width: 760px;
+        }
+        .ca-hero h1 {
+            max-width: 720px;
+            margin-top: .75rem;
+            font-size: clamp(2.25rem, 3.7vw, 3.35rem);
+            font-weight: 400;
+            letter-spacing: .008em;
+            line-height: 1.08;
+        }
+        .ca-hero p {
+            max-width: 650px;
+            margin-top: 1rem;
+            font-size: .98rem;
+        }
+        .ca-hero .ca-tag {
+            display: inline-block;
+            margin-top: 1.2rem;
+            font-size: .66rem;
+            letter-spacing: .065em;
+        }
+        .cam-hero-trust {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .65rem 1.25rem;
+            margin-top: 1.55rem;
+            color: rgba(255,255,255,.82);
+            font-size: .72rem;
+        }
+        .cam-hero-trust span {
+            display: inline-flex;
+            align-items: center;
+            gap: .38rem;
+        }
+        .cam-hero-trust i {
+            width: .42rem;
+            height: .42rem;
+            border-radius: 50%;
+            background: #9cdb4d;
+            box-shadow: 0 0 0 3px rgba(156,219,77,.12);
+        }
+        .cam-journey-card {
+            padding: 1.45rem 1.4rem 1.25rem;
+            border: 1px solid rgba(255,255,255,.22);
+            background: rgba(255,255,255,.10);
+            box-shadow: 0 18px 38px rgba(0,0,0,.12);
+            backdrop-filter: blur(12px);
+        }
+        .cam-journey-kicker {
+            color: #bce77f;
+            font-size: .65rem;
+            font-weight: 800;
+            letter-spacing: .12em;
+        }
+        .cam-journey-title {
+            margin: .4rem 0 1.05rem;
+            color: #ffffff;
+            font-family: "Arial Narrow", Arial, sans-serif;
+            font-size: 1.28rem;
+            font-weight: 500;
+        }
+        .cam-journey-row {
+            display: grid;
+            grid-template-columns: 2rem 1fr auto;
+            align-items: center;
+            gap: .65rem;
+            min-height: 2.8rem;
+            border-top: 1px solid rgba(255,255,255,.13);
+            color: rgba(255,255,255,.72);
+            font-size: .76rem;
+        }
+        .cam-journey-row:first-of-type {
+            border-top: 0;
+        }
+        .cam-journey-number {
+            color: rgba(255,255,255,.46);
+            font-size: .68rem;
+            font-weight: 800;
+        }
+        .cam-journey-row.is-current,
+        .cam-journey-row.is-done {
+            color: #ffffff;
+            font-weight: 700;
+        }
+        .cam-journey-row.is-current .cam-journey-number {
+            color: #bce77f;
+        }
+        .cam-journey-state {
+            color: #bce77f;
+            font-size: .62rem;
+            font-weight: 800;
+            letter-spacing: .05em;
+        }
+        @media (max-width: 1000px) {
+            .cam-corporate { display: none; }
+            .cam-utility-bar { justify-content: flex-end; }
+            .cam-hero-grid { grid-template-columns: 1fr; }
+            .cam-journey-card { display: none; }
+            .ca-hero { min-height: 330px; }
+        }
+        @media (max-width: 760px) {
+            .st-key-top_nav_logo button {
+                padding-left: 4.5rem !important;
+            }
+            .ca-hero {
+                min-height: 315px;
+                padding: 2.2rem 1.35rem;
+            }
+            .ca-hero h1 { font-size: 2.15rem; }
+            .cam-hero-trust { display: none; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -877,9 +1454,418 @@ def render_offers_carousel():
     st.iframe(carousel_html, height=585)
 
 
+@st.dialog("Espace client", width="large")
+def render_customer_access_dialog():
+    """Regrouper la connexion et la création de compte hors de la page d'accueil."""
+    login_tab, signup_tab = st.tabs(["Se connecter", "Créer un compte"])
+
+    with login_tab:
+        with st.form("customer_login_dialog", border=False):
+            login_email = st.text_input(
+                "Adresse e-mail",
+                key="dialog_login_email",
+            )
+            login_password = st.text_input(
+                "Mot de passe",
+                type="password",
+                key="dialog_login_password",
+            )
+            login_submit = st.form_submit_button(
+                "Se connecter",
+                type="primary",
+                width="stretch",
+            )
+            if login_submit:
+                customer = authenticate(login_email, login_password)
+                if customer is None:
+                    st.error("Adresse e-mail ou mot de passe incorrect.")
+                else:
+                    st.session_state.customer_profile = {
+                        "prenom": customer["first_name"],
+                        "nom": customer["last_name"],
+                        "email": customer["email"],
+                        "telephone": customer["phone"],
+                    }
+                    st.session_state.current_client_id = customer["id"]
+                    st.session_state.documents = load_documents(customer["id"])
+                    st.session_state.account_created = True
+                    st.session_state.page = "Accueil"
+                    st.rerun()
+
+    with signup_tab:
+        with st.form("customer_signup_dialog", border=False):
+            left, right = st.columns(2)
+            prenom = left.text_input("Prénom *", key="dialog_signup_first_name")
+            nom = right.text_input("Nom *", key="dialog_signup_last_name")
+            email = left.text_input("Adresse e-mail *", key="dialog_signup_email")
+            telephone = right.text_input("Téléphone *", key="dialog_signup_phone")
+            password = left.text_input(
+                "Mot de passe *",
+                type="password",
+                key="dialog_signup_password",
+            )
+            confirmation = right.text_input(
+                "Confirmer le mot de passe *",
+                type="password",
+                key="dialog_signup_password_confirmation",
+            )
+            consent = st.checkbox(
+                "J'accepte que mes informations soient utilisées pour préparer cette simulation.",
+                key="dialog_signup_consent",
+            )
+            submitted = st.form_submit_button(
+                "Créer mon compte",
+                type="primary",
+                width="stretch",
+            )
+            if submitted:
+                if password != confirmation:
+                    st.error("Les deux mots de passe ne correspondent pas.")
+                elif not consent:
+                    st.error("Votre accord est nécessaire pour poursuivre.")
+                else:
+                    try:
+                        customer = create_customer(
+                            email,
+                            password,
+                            prenom,
+                            nom,
+                            telephone,
+                        )
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.session_state.customer_profile = {
+                            "prenom": customer["first_name"],
+                            "nom": customer["last_name"],
+                            "email": customer["email"],
+                            "telephone": customer["phone"],
+                        }
+                        st.session_state.current_client_id = customer["id"]
+                        st.session_state.documents = load_documents(customer["id"])
+                        st.session_state.account_created = True
+                        st.session_state.page = "Accueil"
+                        st.rerun()
+
+
 def render_header():
-    """Afficher l'identité institutionnelle."""
-    st.caption("CRÉDIT AGRICOLE DU MAROC  ·  MON PROJET HABITAT")
+    """Afficher un en-tête inspiré de l'identité institutionnelle du GCAM."""
+    page_labels = {
+        "Accueil": "Mon projet habitat",
+        "Extraction": "Mes justificatifs",
+        "Verification": "Vérification des informations",
+        "Estimation": "Estimation rapide",
+        "Simulation": "Ma simulation",
+    }
+    current_page = page_labels.get(st.session_state.page, "Crédit Habitat")
+    logo_url = image_to_data_url("assets/logo_ca.jpg")
+    st.markdown(
+        """
+        <header class="cam-site-header">
+            <div class="cam-utility-bar">
+                <span class="cam-corporate">GROUPE CRÉDIT AGRICOLE DU MAROC</span>
+                <div class="cam-utility-actions">
+                    <span class="cam-universe">UNIVERS CAM</span>
+                    <span class="cam-secure">&#128274; PARCOURS SÉCURISÉ</span>
+                </div>
+            </div>
+        </header>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if logo_url:
+        st.markdown(
+            f"""
+            <style>
+            .st-key-top_nav_logo button {{
+                background-image: url("{logo_url}") !important;
+                background-position: left .85rem center !important;
+                background-size: 54px auto !important;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    account_ready = bool(st.session_state.account_created)
+    documents = current_client_documents() if account_ready else {}
+    required_types = {"carte_identite", "bulletin", "releve"}
+    documents_ready = account_ready and required_types.issubset(
+        reviewed_document_types(documents)
+    )
+    dossier_complete = False
+    if account_ready:
+        _, _, dossier_complete, _ = dossier_readiness()
+
+    with st.container(key="cam_top_navigation"):
+        (
+            nav_logo,
+            nav_project,
+            nav_docs,
+            nav_check,
+            nav_sim,
+            nav_estimate,
+            nav_space,
+        ) = st.columns(
+            [1.55, .95, 1.05, 1.15, .95, 1, .9],
+            gap="small",
+        )
+        with nav_logo:
+            if st.button(
+                "CRÉDIT AGRICOLE DU MAROC",
+                width="stretch",
+                key="top_nav_logo",
+                help="Retour à l'accueil",
+                disabled=st.session_state.processing,
+            ):
+                _go_to("Accueil")
+                st.rerun()
+        with nav_project:
+            if st.button(
+                "MON PROJET",
+                icon=":material/home:",
+                width="stretch",
+                type="primary" if st.session_state.page == "Accueil" else "secondary",
+                key="top_nav_project",
+                disabled=st.session_state.processing,
+            ):
+                _go_to("Accueil")
+                st.rerun()
+        with nav_docs:
+            if st.button(
+                "JUSTIFICATIFS",
+                icon=":material/description:",
+                width="stretch",
+                type="primary" if st.session_state.page == "Extraction" else "secondary",
+                key="top_nav_documents",
+                disabled=st.session_state.processing or not account_ready,
+            ):
+                _go_to("Extraction")
+                st.rerun()
+        with nav_check:
+            if st.button(
+                "VÉRIFICATION",
+                icon=":material/fact_check:",
+                width="stretch",
+                type="primary" if st.session_state.page == "Verification" else "secondary",
+                key="top_nav_verification",
+                disabled=st.session_state.processing or not documents_ready,
+            ):
+                _go_to("Verification")
+                st.rerun()
+        with nav_sim:
+            if st.button(
+                "SIMULATION",
+                icon=":material/calculate:",
+                width="stretch",
+                type="primary" if st.session_state.page == "Simulation" else "secondary",
+                key="top_nav_simulation",
+                disabled=st.session_state.processing or not dossier_complete,
+            ):
+                _go_to("Simulation")
+                st.rerun()
+        with nav_estimate:
+            if st.button(
+                "ESTIMATION",
+                icon=":material/finance:",
+                width="stretch",
+                type="primary" if st.session_state.page == "Estimation" else "secondary",
+                key="top_nav_estimation",
+                disabled=st.session_state.processing,
+            ):
+                _go_to("Estimation")
+                st.rerun()
+        with nav_space:
+            with st.popover("MON ESPACE", width="stretch"):
+                if account_ready:
+                    profile = st.session_state.customer_profile
+                    display_name = " ".join(
+                        filter(None, (profile.get("prenom"), profile.get("nom")))
+                    ).strip()
+                    safe_name = html.escape(display_name or "Mon compte")
+                    safe_email = html.escape(str(profile.get("email", "")))
+                    st.markdown(
+                        f"""
+                        <div class="cam-space-profile">
+                            <div class="cam-space-name">{safe_name}</div>
+                            <div class="cam-space-email">{safe_email}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    try:
+                        saved_project = (
+                            load_project(st.session_state.current_client_id) or {}
+                        )
+                    except Exception:
+                        saved_project = {}
+                    completed_steps = sum(
+                        (bool(saved_project), documents_ready, dossier_complete, dossier_complete)
+                    )
+                    progress_percent = int(completed_steps / 4 * 100)
+                    st.markdown(
+                        f'<div class="cam-space-progress">Avancement du dossier : '
+                        f'<strong>{progress_percent} %</strong></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.progress(progress_percent / 100)
+                else:
+                    st.caption(
+                        "Connectez-vous pour sauvegarder et reprendre votre dossier."
+                    )
+                    if st.button(
+                        "Espace client",
+                        icon=":material/account_circle:",
+                        type="primary",
+                        width="stretch",
+                        key="top_nav_customer_access",
+                    ):
+                        render_customer_access_dialog()
+
+                if st.button(
+                    "Demander à Nour",
+                    icon=":material/chat:",
+                    width="stretch",
+                    key="top_nav_nour",
+                ):
+                    st.session_state.assistant_open = True
+                    st.rerun()
+
+                st.markdown("**🛡️ Confidentialité**")
+                st.caption(
+                    "Vos justificatifs servent uniquement à préparer votre simulation."
+                )
+                st.caption(
+                    "Vous gardez le contrôle sur les informations enregistrées."
+                )
+
+                if st.button(
+                    "Espace conseiller",
+                    icon=":material/admin_panel_settings:",
+                    width="stretch",
+                    key="top_nav_advisor",
+                ):
+                    st.session_state.page = "Conseiller"
+                    st.rerun()
+
+                if account_ready and st.button(
+                    "Se déconnecter",
+                    icon=":material/logout:",
+                    width="stretch",
+                    key="top_nav_logout",
+                ):
+                    for key in (
+                        "documents", "current_doc_id", "confirmed_fields", "last_result",
+                        "chat_history", "credit_profile", "customer_profile",
+                        "compromis_skipped",
+                    ):
+                        st.session_state.pop(key, None)
+                    st.session_state.account_created = False
+                    st.session_state.current_client_id = None
+                    st.session_state.page = "Accueil"
+                    st.rerun()
+
+    st.markdown(
+        f"""
+        <div class="cam-breadcrumb">
+            Accueil &nbsp;&gt;&nbsp; <strong>{html.escape(current_page)}</strong>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_cam_hero(eyebrow, title, text, badge):
+    """Afficher la bannière habitat avec un fond local et un repli sans image."""
+    hero_image = image_to_data_url("assets/offres/offre_habitat.png")
+    style = (
+        f' style=\'--cam-hero-image: url("{hero_image}")\''
+        if hero_image else ""
+    )
+
+    account_ready = bool(st.session_state.account_created)
+    project_ready = False
+    documents_ready = False
+    dossier_complete = False
+
+    if account_ready:
+        try:
+            project_ready = bool(load_project(st.session_state.current_client_id))
+        except Exception:
+            project_ready = False
+        documents = current_client_documents()
+        required_types = {"carte_identite", "bulletin", "releve"}
+        documents_ready = required_types.issubset(reviewed_document_types(documents))
+        try:
+            _, _, dossier_complete, _ = dossier_readiness()
+        except Exception:
+            dossier_complete = False
+
+    completed = [
+        project_ready,
+        documents_ready,
+        dossier_complete,
+        dossier_complete and st.session_state.page == "Simulation",
+    ]
+    active_index = next(
+        (index for index, is_done in enumerate(completed) if not is_done),
+        3,
+    )
+    journey_labels = (
+        "Décrire le projet",
+        "Ajouter les justificatifs",
+        "Vérifier les informations",
+        "Comparer les simulations",
+    )
+    journey_rows = []
+    for index, label in enumerate(journey_labels):
+        if completed[index]:
+            row_class = "is-done"
+            state = "TERMINÉ"
+        elif index == active_index:
+            row_class = "is-current"
+            state = "EN COURS" if account_ready else "COMMENCER"
+        else:
+            row_class = ""
+            state = ""
+        journey_rows.append(
+            f"""
+            <div class="cam-journey-row {row_class}">
+                <span class="cam-journey-number">{index + 1:02d}</span>
+                <span>{html.escape(label)}</span>
+                <span class="cam-journey-state">{state}</span>
+            </div>
+            """
+        )
+    journey_html = "".join(journey_rows)
+
+    st.markdown(
+        f"""
+        <section class="ca-hero"{style}>
+            <div class="cam-hero-grid">
+                <div class="ca-hero-content">
+                    <div class="ca-eyebrow">{html.escape(str(eyebrow))}</div>
+                    <h1>{html.escape(str(title))}</h1>
+                    <p>{html.escape(str(text))}</p>
+                    <span class="ca-tag">{html.escape(str(badge))}</span>
+                    <div class="cam-hero-trust">
+                        <span><i></i>Données protégées</span>
+                        <span><i></i>Validation par le client</span>
+                        <span><i></i>Estimation non contractuelle</span>
+                    </div>
+                </div>
+                <aside class="cam-journey-card">
+                    <div class="cam-journey-kicker">VOTRE DEMANDE</div>
+                    <div class="cam-journey-title">Un parcours guidé, étape par étape</div>
+                    {journey_html}
+                </aside>
+            </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_article_card(icon, title, text, tag):
@@ -1506,13 +2492,50 @@ def render_application_sidebar():
             if logout:
                 for key in (
                     "documents", "current_doc_id", "confirmed_fields", "last_result",
-                    "chat_history", "customer_profile", "compromis_skipped",
+                    "chat_history", "credit_profile", "customer_profile",
+                    "compromis_skipped",
                 ):
                     st.session_state.pop(key, None)
                 st.session_state.account_created = False
                 st.session_state.current_client_id = None
                 st.session_state.page = "Accueil"
                 st.rerun()
+
+
+def apply_assistant_result(result):
+    """Mémoriser le profil et préremplir l'estimation rapide."""
+    profile = result.get("profile")
+    if not isinstance(profile, dict):
+        return
+
+    st.session_state.credit_profile = profile
+    project = dict(st.session_state.get("quick_project", {}))
+    project_mapping = {
+        "prix_bien": "purchase_price",
+        "apport_personnel": "contribution",
+        "duree_souhaitee_annees": "duration_years",
+    }
+    widget_mapping = {
+        "prix_bien": ("quick_price",),
+        "apport_personnel": (
+            "quick_contribution",
+            "quick_capacity_contribution",
+        ),
+        "duree_souhaitee_annees": (
+            "quick_years",
+            "quick_capacity_years",
+        ),
+        "revenu_mensuel_net": ("quick_capacity_income",),
+        "charges_mensuelles": ("quick_capacity_charges",),
+    }
+
+    for field in result.get("profile_updates", {}):
+        if field in project_mapping and profile.get(field) is not None:
+            project[project_mapping[field]] = profile[field]
+        for widget_key in widget_mapping.get(field, ()):
+            st.session_state.pop(widget_key, None)
+
+    st.session_state.quick_project = project
 
 
 def render_assistant_dock(advisor_id):
@@ -1558,11 +2581,17 @@ def render_assistant_dock(advisor_id):
 
         history = st.session_state.chat_history[-6:]
         if not history:
-            st.write("Bonjour ! Comment puis-je vous aider dans votre projet immobilier ?")
+            st.write(
+                "Bonjour ! Je vais vous accompagner étape par étape. "
+                "Vous pouvez commencer par me parler de votre profession "
+                "et de votre projet immobilier."
+            )
             suggestions = {
+                "Décrire ma situation": (
+                    "Je souhaite préparer mon projet de crédit habitat."
+                ),
                 "Documents à préparer": "Quels documents dois-je préparer pour ma simulation ?",
                 "Estimer ma mensualité": "Comment est calculée la mensualité de mon crédit habitat ?",
-                "Étapes de la simulation": "Quelles sont les étapes pour obtenir ma simulation ?",
             }
             selected = st.pills(
                 "Questions suggérées",
@@ -1596,6 +2625,8 @@ def render_assistant_dock(advisor_id):
                     question=question,
                     advisor_id=advisor_id,
                     session_id=st.session_state.session_id,
+                    profile=st.session_state.credit_profile,
+                    conversation_history=st.session_state.chat_history,
                 )
             except FileNotFoundError:
                 st.error("La base documentaire n’est pas encore disponible.")
@@ -1605,11 +2636,14 @@ def render_assistant_dock(advisor_id):
                 st.error(f"L’assistant est momentanément indisponible : {exc}")
                 return
 
+        apply_assistant_result(answer)
         st.session_state.chat_history.append({
             "question": question,
             "answer": answer["answer"],
             "in_scope": answer.get("in_scope", False),
             "sources": answer.get("sources", []),
+            "mode": answer.get("mode", "rag"),
+            "profile_updates": answer.get("profile_updates", {}),
         })
         st.rerun()
 
@@ -1814,6 +2848,9 @@ if "last_result" not in st.session_state:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
+if "credit_profile" not in st.session_state:
+    st.session_state.credit_profile = {}
+
 if "page" not in st.session_state:
     st.session_state.page = "Accueil"
 
@@ -1858,12 +2895,6 @@ advisor_id = (
     f"{st.session_state.session_id[:8]}"
 )
 
-with st.sidebar:
-    if st.session_state.page == "Conseiller":
-        render_advisor_sidebar()
-    else:
-        render_application_sidebar()
-
 if st.session_state.page != "Conseiller":
     render_assistant_dock(advisor_id)
 
@@ -1885,77 +2916,53 @@ if st.session_state.page != "Conseiller":
 # =========================================================
 
 if st.session_state.page == "Conseiller":
+    if st.button(
+        "Retour à l'espace client",
+        icon=":material/arrow_back:",
+        key="advisor_back_to_client",
+    ):
+        st.session_state.page = "Accueil"
+        st.rerun()
+    render_advisor_sidebar()
     render_advisor_dashboard()
 
 elif st.session_state.page == "Accueil":
     if not st.session_state.account_created:
-        st.markdown(
-            """
-            <section class="ca-hero">
-                <div class="ca-eyebrow"> ESPACE CLIENT</div>
-                <h1>Commençons votre projet habitat.</h1>
-                <p>Créez votre espace personnel pour sauvegarder vos justificatifs,
-                reprendre votre parcours et affiner votre simulation.</p>
-            </section>
-            """,
-            unsafe_allow_html=True,
+        render_cam_hero(
+            "CRÉDIT HABITAT · ESPACE CLIENT",
+            "Commençons votre projet habitat",
+            "Créez votre espace personnel pour sauvegarder vos justificatifs, "
+            "reprendre votre parcours et affiner votre simulation.",
+            "ACCOMPAGNEMENT DIGITAL · DONNÉES PROTÉGÉES",
         )
         render_offers_carousel()
 
-        login_tab, signup_tab = st.tabs(["Se connecter", "Créer un compte"])
-        with login_tab:
-            with st.form("customer_login", border=True):
-                login_email = st.text_input("Adresse e-mail", key="login_email")
-                login_password = st.text_input("Mot de passe", type="password", key="login_password")
-                login_submit = st.form_submit_button("Se connecter", type="primary", width="stretch")
-                if login_submit:
-                    customer = authenticate(login_email, login_password)
-                    if customer is None:
-                        st.error("Adresse e-mail ou mot de passe incorrect.")
-                    else:
-                        st.session_state.customer_profile = {
-                            "prenom": customer["first_name"], "nom": customer["last_name"],
-                            "email": customer["email"], "telephone": customer["phone"],
-                        }
-                        st.session_state.current_client_id = customer["id"]
-                        st.session_state.documents = load_documents(customer["id"])
-                        st.session_state.account_created = True
-                        st.rerun()
-        with signup_tab:
-            with st.form("customer_signup", border=True):
-                left, right = st.columns(2)
-                prenom = left.text_input("Prénom *", key="signup_first_name")
-                nom = right.text_input("Nom *", key="signup_last_name")
-                email = left.text_input("Adresse e-mail *", key="signup_email")
-                telephone = right.text_input("Téléphone *", key="signup_phone")
-                password = left.text_input("Mot de passe *", type="password", key="signup_password")
-                confirmation = right.text_input("Confirmer le mot de passe *", type="password",
-                                                key="signup_password_confirmation")
-                consent = st.checkbox(
-                    "J'accepte que mes informations soient utilisées pour préparer cette simulation."
-                )
-                submitted = st.form_submit_button(
-                    "Créer mon compte", type="primary", width="stretch"
-                )
-                if submitted:
-                    if password != confirmation:
-                        st.error("Les deux mots de passe ne correspondent pas.")
-                    elif not consent:
-                        st.error("Votre accord est nécessaire pour poursuivre.")
-                    else:
-                        try:
-                            customer = create_customer(email, password, prenom, nom, telephone)
-                        except ValueError as exc:
-                            st.error(str(exc))
-                        else:
-                            st.session_state.customer_profile = {
-                                "prenom": customer["first_name"], "nom": customer["last_name"],
-                                "email": customer["email"], "telephone": customer["phone"],
-                            }
-                            st.session_state.current_client_id = customer["id"]
-                            st.session_state.documents = load_documents(customer["id"])
-                            st.session_state.account_created = True
-                            st.rerun()
+        st.markdown(
+            '<div class="ca-section-title">Un parcours simple et sécurisé</div>',
+            unsafe_allow_html=True,
+        )
+        benefit_columns = st.columns(3, gap="large")
+        with benefit_columns[0]:
+            render_article_card(
+                "🏠",
+                "Décrivez votre projet",
+                "Renseignez votre bien, votre budget, votre apport et la durée souhaitée.",
+                "ÉTAPE 01",
+            )
+        with benefit_columns[1]:
+            render_article_card(
+                "📄",
+                "Ajoutez vos justificatifs",
+                "Vérifiez et corrigez chaque information détectée avant son utilisation.",
+                "ÉTAPE 02",
+            )
+        with benefit_columns[2]:
+            render_article_card(
+                "📊",
+                "Comparez vos scénarios",
+                "Estimez votre mensualité et votre capacité d'emprunt sans engagement.",
+                "ÉTAPE 03",
+            )
         st.stop()
 
     client_docs = current_client_documents()
@@ -1992,16 +2999,11 @@ elif st.session_state.page == "Accueil":
         )
         hero_badge = "PARCOURS SÉCURISÉ · VALIDATION PAR LE CLIENT"
 
-    st.markdown(
-        f"""
-        <section class="ca-hero">
-            <div class="ca-eyebrow">CRÉDIT HABITAT · ESPACE PERSONNEL</div>
-            <h1>{hero_title}</h1>
-            <p>{hero_text}</p>
-            <span class="ca-tag">{hero_badge}</span>
-        </section>
-        """,
-        unsafe_allow_html=True,
+    render_cam_hero(
+        "CRÉDIT HABITAT · ESPACE PERSONNEL",
+        hero_title,
+        hero_text,
+        hero_badge,
     )
 
     # -----------------------------------------------------
@@ -2670,19 +3672,31 @@ elif st.session_state.page == "Estimation":
     ])
 
     estimate = None
+    quick_profile = st.session_state.get("credit_profile", {})
+    quick_income = float(
+        quick_profile.get("revenu_mensuel_net") or 0
+    ) + float(
+        quick_profile.get("autres_revenus_mensuels") or 0
+    )
+    quick_charges = float(
+        quick_profile.get("charges_mensuelles") or 0
+    )
+    quick_project = st.session_state.get("quick_project", {})
 
     with simulation_tab:
         estimate = render_simulation(
-            key_prefix="quick"
+            project=quick_project,
+            key_prefix="quick",
+            income=quick_income or None,
+            existing_monthly_charges=quick_charges,
         )
 
     with capacity_tab:
         render_borrowing_capacity(
-            project=st.session_state.get(
-                "quick_project",
-                {},
-            ),
+            project=quick_project,
             key_prefix="quick_capacity",
+            income=quick_income or None,
+            existing_monthly_charges=quick_charges,
         )
 
     if st.button(
@@ -2812,6 +3826,7 @@ elif st.session_state.page == "Assistant":
     with col_new:
         if st.button("🆕 Nouvelle conversation", width="stretch"):
             st.session_state.chat_history = []
+            st.session_state.credit_profile = {}
             st.rerun()
     
     st.divider()
@@ -2860,7 +3875,14 @@ elif st.session_state.page == "Assistant":
             st.write(exchange["question"])
         
         with st.chat_message("assistant"):
-            if exchange.get("in_scope", False):
+            if exchange.get("mode") == "guidance":
+                st.badge(
+                    "Accompagnement personnalisé",
+                    color="green",
+                    icon=":material/account_circle:",
+                )
+                st.write(exchange["answer"])
+            elif exchange.get("in_scope", False):
                 st.badge("Réponse documentée", color="green", icon=":material/library_books:")
                 st.write(exchange["answer"])
                 
@@ -2896,6 +3918,8 @@ elif st.session_state.page == "Assistant":
                         question=question,
                         advisor_id=advisor_id,
                         session_id=st.session_state.session_id,
+                        profile=st.session_state.credit_profile,
+                        conversation_history=st.session_state.chat_history,
                     )
                 except FileNotFoundError:
                     st.error(
@@ -2907,7 +3931,14 @@ elif st.session_state.page == "Assistant":
                     st.error(f"❌ Erreur lors du traitement : {str(e)}")
                     st.stop()
             
-            if chat_result.get("in_scope", False):
+            if chat_result.get("mode") == "guidance":
+                st.badge(
+                    "Accompagnement personnalisé",
+                    color="green",
+                    icon=":material/account_circle:",
+                )
+                st.write(chat_result["answer"])
+            elif chat_result.get("in_scope", False):
                 st.badge("Réponse documentée", color="green", icon=":material/library_books:")
                 st.write(chat_result["answer"])
                 
@@ -2920,11 +3951,14 @@ elif st.session_state.page == "Assistant":
                 st.warning(chat_result["answer"])
         
         # Ajouter à l'historique
+        apply_assistant_result(chat_result)
         st.session_state.chat_history.append({
             "question": question,
             "answer": chat_result["answer"],
             "in_scope": chat_result.get("in_scope", False),
             "sources": chat_result.get("sources", []),
+            "mode": chat_result.get("mode", "rag"),
+            "profile_updates": chat_result.get("profile_updates", {}),
         })
         
         st.rerun()
@@ -2943,8 +3977,7 @@ st.caption("Crédit Agricole du Maroc — Assistant Crédit Habitat")
 # =========================================================
 
 if "error" in st.session_state:
-    with st.sidebar:
-        st.error(f"⚠️ {st.session_state.error}")
-        if st.button("Effacer l'erreur"):
-            del st.session_state.error
-            st.rerun()
+    st.error(f"⚠️ {st.session_state.error}")
+    if st.button("Effacer l'erreur", key="clear_global_error"):
+        del st.session_state.error
+        st.rerun()

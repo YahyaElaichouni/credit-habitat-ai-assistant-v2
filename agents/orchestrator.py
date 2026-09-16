@@ -23,7 +23,7 @@ indépendamment.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +71,10 @@ class Orchestrator:
         question: str,
         advisor_id: str,
         session_id: str,
+        profile: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Route vers le pipeline conversationnel RAG
-        (retrieval -> décision de périmètre -> génération -> audit)."""
+        """Route vers l'accompagnement guidé, puis le RAG si nécessaire."""
 
         # Import à la première question seulement. Cela évite de charger
         # sentence-transformers, PyTorch et FAISS au lancement de Streamlit.
@@ -85,4 +86,6 @@ class Orchestrator:
             "question": question,
             "advisor_id": advisor_id,
             "session_id": session_id,
+            "profile": profile or {},
+            "conversation_history": conversation_history or [],
         })
