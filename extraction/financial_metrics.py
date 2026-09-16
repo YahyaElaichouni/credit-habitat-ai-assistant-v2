@@ -6,23 +6,19 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-CREDIT_WORDS = (
-    "mensualite credit", "mensualite de credit", "mensualite pret",
-    "echeance credit", "echeance de credit", "echeance pret", "echeance de pret",
-    "prelevement credit", "prelevement de credit", "prelevement pret",
-    "reglement credit", "remboursement credit", "remboursement pret",
-    "credit immobilier", "credit habitat", "credit logement",
-    "credit auto", "credit consommation",
+CREDIT_CHARGE_PATTERN = (
+    r"\b(?:mensualite|echeance|prelevement|reglement|remboursement|traite)\w*"
+    r".{0,35}\b(?:credit|pret|financement|habitat|logement|immobilier|auto|conso)\w*"
+    r"|\b(?:credit|pret|financement)\w*.{0,35}"
+    r"\b(?:mensualite|echeance|prelevement|habitat|logement|immobilier|auto|conso)\w*"
 )
 EXCLUDED_WORDS = ("assurance", "remboursement anticipe", "solde du pret")
-EXTRA_INCOME_WORDS = (
-    "prime", "virement complementaire", "revenu complementaire",
-    "allocation", "loyer recu", "pension", "vir-inst de",
-    "virement recu", "virement en votre faveur", "vir crediteur",
-)
-OCR_EXTRA_INCOME_WORDS = (
-    "vir-inst de", "virement recu", "virement en votre faveur",
-    "vir crediteur", "virement complementaire", "loyer recu",
+# Le type ``credit`` vient de la colonne du relevé et constitue la règle
+# principale. Ce motif compact sert uniquement de secours lorsque l'OCR/LLM
+# omet le type : il couvre les familles lexicales, pas les libellés des banques.
+INCOMING_OPERATION_PATTERN = (
+    r"\b(?:vir(?:ement)?|recept(?:ion)?|vers(?:ement|t)?|depot|remise|"
+    r"allocation|pension|loyer|prime)\w*"
 )
 EXTRA_INCOME_EXCLUDED = (
     "salaire", "paie", "remboursement", "annulation", "contrepassation",
@@ -49,8 +45,11 @@ def _norm(value):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _date(value):
+def _date(value, default_year=None):
     raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    short = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})", raw)
+    if short and default_year:
+        raw = f"{short.group(1)}/{short.group(2)}/{default_year}"
     spaced = re.fullmatch(r"(\d{1,2})\s+(\d{1,2})\s+(\d{2,4})", raw)
     if spaced:
         raw = "/".join(spaced.groups())
@@ -61,6 +60,20 @@ def _date(value):
         except ValueError:
             pass
     return None
+
+
+def _statement_year(pages):
+    """Déduit l'année de période pour les lignes qui n'affichent que JJ/MM."""
+    text = " ".join(str(item.get("text") or "") for item in pages or [])
+    period = re.search(
+        r"(?i)(?:relev[ée]\s+)?du\s+\d{1,2}[./-]\d{1,2}[./-](\d{2,4})"
+        r"\s+au\s+\d{1,2}[./-]\d{1,2}[./-](\d{2,4})",
+        text,
+    )
+    if not period:
+        return None
+    raw_year = int(period.group(2))
+    return raw_year + 2000 if raw_year < 100 else raw_year
 
 
 def _amount(value):
@@ -102,7 +115,7 @@ def _transaction_evidence(item, pages):
     if isinstance(quote, str) and _norm(quote) and _norm(quote) in page_text:
         return quote.strip()
 
-    day = _date(item.get("date"))
+    day = _date(item.get("date"), _statement_year(pages))
     amount = _amount(item.get("montant"))
     description = _norm(item.get("description"))
     if day is None or amount is None or not description:
@@ -110,6 +123,7 @@ def _transaction_evidence(item, pages):
     date_forms = {
         day.strftime("%d/%m/%Y"), day.strftime("%d-%m-%Y"),
         day.strftime("%Y-%m-%d"), day.strftime("%d.%m.%Y"),
+        day.strftime("%d/%m"), day.strftime("%d-%m"), day.strftime("%d.%m"),
     }
     amount_forms = {
         f"{abs(amount):.2f}", f"{abs(amount):.2f}".replace(".", ","),
@@ -181,8 +195,15 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
     exigeant une date, un mot-clé métier et un montant décimal sur la même
     ligne logique délimitée par ``|``.
     """
-    date_pattern = r"\d{1,2}(?:\s*[./-]\s*|\s+)\d{1,2}(?:\s*[./-]\s*|\s+)\d{2,4}"
-    keyword_pattern = "|".join(re.escape(_norm(word)) for word in keywords)
+    date_pattern = (
+        r"\d{1,2}(?:\s*[./-]\s*|\s+)\d{1,2}"
+        r"(?:(?:\s*[./-]\s*|\s+)\d{2,4})?"
+    )
+    keyword_pattern = (
+        keywords
+        if isinstance(keywords, str)
+        else "|".join(re.escape(_norm(word)) for word in keywords)
+    )
     amount_pattern = r"(\d{1,3}(?:[ .]\d{3})*|\d+)[,.](\d{2})"
     pattern = re.compile(
         rf"(?P<date>{date_pattern})\s*\|\s*"
@@ -190,6 +211,7 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
         rf"(?:[^|]{{1,35}}\|\s*){{0,2}}"
         rf"(?P<description>[^|]{{0,120}}?(?:{keyword_pattern})[^|]{{0,120}}?)\s*\|\s*"
         rf"(?:{date_pattern}\s*\|\s*)?"
+        rf"(?:\|\s*)?"
         rf"(?P<amount>{amount_pattern})",
         re.I,
     )
@@ -200,7 +222,7 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
             continue
         page_text = _norm(" ".join(str(page_item.get("text") or "").split()))
         for match in pattern.finditer(page_text):
-            day = _date(match.group("date"))
+            day = _date(match.group("date"), _statement_year(pages))
             amount = _amount(match.group("amount"))
             if day is None or amount is None or amount <= 0:
                 continue
@@ -216,6 +238,26 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
     return found
 
 
+def _prefer_complete_evidence(model_transactions, ocr_transactions, metric_name):
+    """Retient la série prouvée la plus complète pour un calcul mensuel.
+
+    Le modèle peut reconnaître une première ligne puis omettre les lignes
+    identiques suivantes. Le secours OCR doit donc aussi être exécuté quand
+    la liste du modèle n'est pas vide. On remplace la série uniquement si le
+    document fournit davantage d'opérations explicites, afin de ne pas perdre
+    une extraction du modèle déjà plus riche.
+    """
+    if len(ocr_transactions) > len(model_transactions):
+        logger.info(
+            "%s: série OCR plus complète retenue (%s opérations contre %s).",
+            metric_name,
+            len(ocr_transactions),
+            len(model_transactions),
+        )
+        return ocr_transactions
+    return model_transactions or ocr_transactions
+
+
 def derive_monthly_credit_charge(transactions, pages, document_path, document_sha256):
     """Médiane des totaux mensuels prouvés ; aucun résultat sans preuve OCR."""
     eligible = []
@@ -223,12 +265,13 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
         if not isinstance(item, dict):
             continue
         description = _norm(item.get("description"))
-        amount, day = _amount(item.get("montant")), _date(item.get("date"))
+        amount = _amount(item.get("montant"))
+        day = _date(item.get("date"), _statement_year(pages))
         transaction_type = _norm(item.get("type"))
         page = item.get("page")
         quote = _transaction_evidence(item, pages)
         verified = quote is not None
-        credit_label = any(word in description for word in CREDIT_WORDS)
+        credit_label = bool(re.search(CREDIT_CHARGE_PATTERN, description))
         # Certains modèles renvoient "débit", "DEBIT", "D" ou un montant négatif.
         # Le libellé explicite de mensualité reste obligatoire pour éviter les faux positifs.
         is_debit = transaction_type in {"debit", "d", "dr"} or (
@@ -244,19 +287,20 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
                 "Échéance de crédit ignorée: type=%r, montant=%r, date=%r, page=%r, preuve_verifiee=%s",
                 item.get("type"), item.get("montant"), item.get("date"), page, verified,
             )
-    # Secours déterministe : le LLM peut oublier la transaction ou mal typer
-    # débit/crédit. Une ligne OCR portant un libellé explicite d'échéance suffit
-    # à proposer le montant qui suit immédiatement ce libellé.
-    if not eligible:
-        eligible = [
-            item for item in _ocr_keyword_transactions(pages, CREDIT_WORDS, "debit")
-            if not any(word in _norm(item["description"]) for word in EXCLUDED_WORDS)
-        ]
-        for item in eligible:
-            logger.info(
-                "Échéance de crédit reconnue directement dans l'OCR: page=%s, montant=%.2f",
-                item["page"], item["montant"],
-            )
+    # Le secours est systématique : une liste LLM partielle ne doit pas bloquer
+    # la lecture des autres échéances explicitement présentes dans l'OCR.
+    ocr_eligible = [
+        item for item in _ocr_keyword_transactions(pages, CREDIT_CHARGE_PATTERN, "debit")
+        if not any(word in _norm(item["description"]) for word in EXCLUDED_WORDS)
+    ]
+    eligible = _prefer_complete_evidence(
+        eligible, ocr_eligible, "Charges mensuelles de crédits"
+    )
+    for item in ocr_eligible:
+        logger.info(
+            "Échéance de crédit reconnue directement dans l'OCR: page=%s, montant=%.2f",
+            item["page"], item["montant"],
+        )
     if not eligible:
         return _zero_proposal(
             transactions, pages, document_path, document_sha256,
@@ -296,31 +340,38 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         if not isinstance(item, dict):
             continue
         description = _norm(item.get("description"))
-        amount, day = _amount(item.get("montant")), _date(item.get("date"))
+        amount = _amount(item.get("montant"))
+        day = _date(item.get("date"), _statement_year(pages))
         transaction_type = _norm(item.get("type"))
         page = item.get("page")
         quote = _transaction_evidence(item, pages)
         verified = quote is not None
-        incoming_label = any(word in description for word in EXTRA_INCOME_WORDS)
+        incoming_label = bool(re.search(INCOMING_OPERATION_PATTERN, description))
         is_credit = transaction_type in {"credit", "c", "cr"} or (
             transaction_type == "" and incoming_label
         )
         if (is_credit and day and amount is not None and amount > 0
-                and any(word in description for word in EXTRA_INCOME_WORDS)
                 and not any(word in description for word in EXTRA_INCOME_EXCLUDED) and verified):
             eligible.append({**item, "montant": amount, "quote": quote,
                              "month": day.strftime("%Y-%m")})
-    # Secours sur le texte tabulaire lorsque le le LLM oublie certaines
-    # transactions. « VIR-INST DE » désigne ici un virement entrant explicite.
-    if not eligible:
-        eligible = [
-            item for item in _ocr_keyword_transactions(pages, OCR_EXTRA_INCOME_WORDS, "credit")
-            if not any(word in _norm(item["description"]) for word in EXTRA_INCOME_EXCLUDED)
-        ]
+    # Le secours est systématique : le modèle extrait fréquemment la première
+    # occurrence d'un virement récurrent mais oublie les suivantes.
+    ocr_eligible = [
+        item for item in _ocr_keyword_transactions(
+            pages, INCOMING_OPERATION_PATTERN, "credit"
+        )
+        if not any(
+            word in _norm(item["description"])
+            for word in EXTRA_INCOME_EXCLUDED
+        )
+    ]
+    eligible = _prefer_complete_evidence(
+        eligible, ocr_eligible, "Revenus complémentaires"
+    )
     if not eligible:
         return _zero_proposal(
             transactions, pages, document_path, document_sha256,
-            "aucun revenu complémentaire explicite détecté dans les crédits du relevé",
+            "aucune opération créditrice éligible détectée dans le relevé",
         )
     monthly = {}
     for item in eligible:
@@ -338,7 +389,7 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
                    "page": first["page"], "quote": first["quote"], "verified": True,
                    "evidence": [{k: x.get(k) for k in ("date", "description", "montant", "page", "quote")}
                                 for x in eligible],
-                   "method": "médiane des totaux mensuels de revenus complémentaires vérifiés",
+                   "method": "médiane des crédits mensuels vérifiés, salaire et opérations techniques exclus",
                    "regularity_proven": regularity_proven},
     }
 

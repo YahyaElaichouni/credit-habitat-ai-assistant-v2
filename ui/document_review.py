@@ -26,10 +26,10 @@ LABELS = {
 }
 IDENTITY_METADATA_FIELDS = {"identite_ambigue", "noms_non_attribues"}
 REVIEW_FIELDS = {
-    "bulletin": ("nom", "prenom", "employeur", "poste", "date_embauche", "periode",
-                 "salaire_brut", "total_retenues", "salaire_net"),
-    "releve": ("banque", "periode_debut", "periode_fin", "solde_final",
-               "charge_mensuelle_credits", "revenus_complementaires"),
+    "bulletin": ("employeur", "date_embauche", "salaire_net", "periode", "poste",
+                 "nom", "prenom"),
+    "releve": ("charge_mensuelle_credits", "revenus_complementaires", "banque",
+               "periode_debut", "periode_fin"),
     "carte_identite": ("nom", "prenom", "cin", "date_naissance", "lieu_naissance",
                        "date_expiration", "adresse"),
     "compromis": ("prix_vente", "adresse_bien", "date_signature"),
@@ -97,6 +97,11 @@ def render_declared_form(document_type, client_id):
 def _review_field_names(fields, document_type):
     """Champs métier visibles, sans les structures techniques volumineuses."""
     names = list(REVIEW_FIELDS.get(document_type, ()))
+    # Les anciens dossiers peuvent encore contenir l'ancien schéma complet.
+    # Pour les deux documents les plus chargés, l'interface applique donc une
+    # liste blanche stricte au lieu de réafficher ces champs historiques.
+    if document_type in {"bulletin", "releve"}:
+        return names
     for name, decision in fields.items():
         if name in names or name in IDENTITY_METADATA_FIELDS or name == "transactions":
             continue

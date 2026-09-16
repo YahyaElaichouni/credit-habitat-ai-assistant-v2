@@ -7,6 +7,16 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 
+STATEMENT_TARGET_FIELDS = (
+    "banque",
+    "periode_debut",
+    "periode_fin",
+    "transactions",
+    "charge_mensuelle_credits",
+    "revenus_complementaires",
+)
+
+
 def _missing(data: Dict[str, Any], name: str) -> bool:
     current = data.get(name)
     return current is None or (
@@ -97,6 +107,7 @@ def _header_match(text: str, pattern: str) -> Optional[re.Match]:
     return re.search(pattern, text, re.I | re.S)
 
 
+
 def _fill_populaire_header(result: Dict[str, Any], text: str) -> None:
     """Secours pour les relevés Banque Populaire dont l'OCR aplatit l'en-tête."""
     agency = _header_match(
@@ -139,11 +150,39 @@ def _fill_populaire_header(result: Dict[str, Any], text: str) -> None:
         if 12 <= len(account_number) <= 24:
             _put(result, "numero_compte", account_number, text, account_table, 0.84)
         _put(result, "banque", "Banque Populaire", text, account_table, 0.80)
+        _put(result, "banque", "Banque Populaire", text, account_table, 0.80)
+
+
+def _fill_bank_name(result: Dict[str, Any], text: str) -> None:
+    """Reconnaît les banques usuelles sans dépendre de la mise en page OCR."""
+    if not _missing(result, "banque"):
+        return
+    bank_patterns = (
+        (r"\bSOCI[ÉE]T[ÉE]\s+G[ÉE]N[ÉE]RALE\b", "Société Générale"),
+        (r"\bCR[ÉE]DIT\s+AGRICOLE(?:\s+DU\s+MAROC)?\b", "Crédit Agricole du Maroc"),
+        (r"\bBANQUE\s+POPULAIRE\b", "Banque Populaire"),
+        (r"\bATTIJARIWAFA\s*BANK\b", "Attijariwafa bank"),
+        (r"\b(?:BANK\s+OF\s+AFRICA|BMCE)\b", "Bank of Africa"),
+        (r"\bBMCI\b", "BMCI"),
+        (r"\bCIH(?:\s+BANK)?\b", "CIH Bank"),
+    )
+    # Le nom de la banque apparaît normalement dans l'en-tête. Une recherche
+    # bornée évite de confondre une banque citée dans le libellé d'une opération.
+    header = text[:1800]
+    for pattern, name in bank_patterns:
+        match = re.search(pattern, header, re.I)
+        if match:
+            _put(result, "banque", name, text, match, 0.94)
+            return
 
 
 def fill_missing_statement_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str, Any]:
-    """Complète les champs usuels sans dépendre d'une mise en page bancaire."""
-    result = dict(data)
+    """Complète uniquement les champs du relevé utiles à la simulation."""
+    result = {
+        key: value
+        for key, value in data.items()
+        if key == "document_type" or key in STATEMENT_TARGET_FIELDS
+    }
     initial = None
     initial_label = ""
     for label in (
@@ -226,5 +265,11 @@ def fill_missing_statement_fields(data: Dict[str, Any], ocr_text: str) -> Dict[s
         _put(result, "iban", re.sub(r"\s+", "", iban.group(1)), ocr_text, iban)
 
     _fill_populaire_header(result, ocr_text)
+    _fill_bank_name(result, ocr_text)
+    _fill_populaire_header(result, ocr_text)
 
-    return result
+    return {
+        key: value
+        for key, value in result.items()
+        if key == "document_type" or key in STATEMENT_TARGET_FIELDS
+    }

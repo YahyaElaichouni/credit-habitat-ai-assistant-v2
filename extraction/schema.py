@@ -157,22 +157,16 @@ class BulletinSchema(BaseModel):
 
     document_type: str = "bulletin"
 
+    # Champs strictement nécessaires au parcours de crédit habitat.
+    # Garder un schéma court réduit le temps d'inférence et les confusions
+    # entre les nombreuses colonnes chiffrées d'un bulletin de paie.
     nom: ExtractedField[str] = Field(default_factory=ExtractedField)
     prenom: ExtractedField[str] = Field(default_factory=ExtractedField)
-
     employeur: ExtractedField[str] = Field(default_factory=ExtractedField)
-    matricule: ExtractedField[str] = Field(default_factory=ExtractedField)
     poste: ExtractedField[str] = Field(default_factory=ExtractedField)
     date_embauche: ExtractedField[str] = Field(default_factory=ExtractedField)
     periode: ExtractedField[str] = Field(default_factory=ExtractedField)
-
-    salaire_base: MonetaryField = Field(default_factory=MonetaryField)
-    salaire_brut: MonetaryField = Field(default_factory=MonetaryField)
-    brut_imposable: MonetaryField = Field(default_factory=MonetaryField)
-    total_retenues: MonetaryField = Field(default_factory=MonetaryField)
     salaire_net: MonetaryField = Field(default_factory=MonetaryField)
-
-    devise: ExtractedField[str] = Field(default_factory=ExtractedField)
 
 
 # =========================================================
@@ -186,25 +180,14 @@ class ReleveBancaireSchema(BaseModel):
 
     document_type: str = "releve"
 
-    nom: ExtractedField[str] = Field(default_factory=ExtractedField)
-    prenom: ExtractedField[str] = Field(default_factory=ExtractedField)
-
+    # Métadonnées minimales permettant d'identifier et dater le relevé.
     banque: ExtractedField[str] = Field(default_factory=ExtractedField)
-    agence: ExtractedField[str] = Field(default_factory=ExtractedField)
-    titulaire_adresse: ExtractedField[str] = Field(default_factory=ExtractedField)
-    numero_compte: ExtractedField[str] = Field(default_factory=ExtractedField)
-    iban: ExtractedField[str] = Field(default_factory=ExtractedField)
-
     periode_debut: ExtractedField[str] = Field(default_factory=ExtractedField)
     periode_fin: ExtractedField[str] = Field(default_factory=ExtractedField)
 
-    solde_initial: MonetaryField = Field(default_factory=MonetaryField)
-    solde_final: MonetaryField = Field(default_factory=MonetaryField)
-
-    devise: ExtractedField[str] = Field(default_factory=ExtractedField)
-
+    # Les transactions sont conservées uniquement comme données techniques
+    # nécessaires aux deux calculs métier ci-dessous.
     transactions: List[Transaction] = Field(default_factory=list)
-
     charge_mensuelle_credits: MonetaryField = Field(default_factory=MonetaryField)
     revenus_complementaires: MonetaryField = Field(default_factory=MonetaryField)
 

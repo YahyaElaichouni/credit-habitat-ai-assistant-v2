@@ -169,111 +169,60 @@ Texte OCR :
 # =========================================================
 
 BULLETIN_PROMPT = """
-Le document est un bulletin de paie marocain ou étranger. Le texte peut
-provenir d'un tableau : le séparateur " | " représente des cellules de la
-même ligne.
+Le document est un bulletin de paie marocain ou étranger. Le séparateur OCR
+" | " représente généralement des cellules d'une même ligne.
 
-Extrais chacun des champs suivants au format
-{{"value": ..., "confidence": ..., "source": ...}} :
-nom, prenom, employeur, matricule, poste, date_embauche,
-periode, salaire_base, salaire_brut, brut_imposable, total_retenues,
-salaire_net et devise.
+Extrais UNIQUEMENT ces 7 champs :
+nom, prenom, employeur, poste, date_embauche, periode, salaire_net.
 
-REGLES POUR LES BULLETINS FRANCAIS ET MAROCAINS
+Chaque champ doit respecter exactement la structure :
+{{"value": ..., "confidence": ..., "source": ...}}.
 
-ASSOCIATION DES LIBELLES (variantes possibles)
+PRIORITÉ MÉTIER
+1. employeur
+2. date_embauche
+3. salaire_net
+Puis seulement : periode, poste, nom et prenom.
 
-- nom/prenom : "Employé", "Salarié", "Nom et prénom", "Nom complet",
-  "Collaborateur", ou identité précédée de "Madame", "Monsieur", "Mme",
-  "Mlle". Si une ligne contient matricule + identité, retire le
-  matricule avant d'attribuer le nom. Ne prends jamais le signataire du
-  bulletin, le directeur RH ou le responsable du capital humain.
-- employeur : "Société", "Entreprise", "Employeur", "Raison sociale",
-  dénomination dans l'en-tête. Ne confonds pas l'employeur avec la banque,
-  l'agence bancaire, le département ou la direction du salarié.
-- matricule : "Matricule", "Mle", "N° salarié", "Code employé",
-  "N° employé". Ne confonds pas avec CIN, CNSS, RCAR, CIMR, CNRA, AMO,
-  mutuelle, compte bancaire, RIB, rubrique ou code direction. Dans un tableau,
-  la valeur peut se trouver sur la ligne suivante sous la colonne Matricule.
-- poste : "Poste", "Fonction", "Emploi", "Profession", "Grade",
-  "Emploi occupé", "Qualification", "Catégorie", "Classe". Une direction, un département,
-  une antenne ou une adresse n'est pas automatiquement un poste.
-- date_embauche : "Date d'embauche", "Date embauche", "Embauché le",
-  "Date d'entrée", "Entrée société", "Date de recrutement",
-  "Début de contrat". "Ancienneté" n'est pas une date d'embauche.
-- periode : "Période", "Période de paie", "Paie de", "Mois de paie",
-  "Bulletin de paie 9/2023", "Janvier 2026", "Période du : ... au : ...".
-  Une date d'édition, d'impression ou de paiement n'est pas la période.
-- salaire_base : "Salaire de base", "Salaire principal", "Traitement de
-  base", "Traitement de base indiciaire", "Base mensuelle", "Salaire base
-  horaire" ou "Salaire horaire" quand le bulletin est
-  explicitement horaire. Ne prends pas la colonne Base d'une cotisation.
-- salaire_brut : "Salaire brut", "Total brut", "Brut du mois",
-  "Total gains" lorsque ce libellé représente clairement le brut courant.
-- brut_imposable : "Brut imposable", "Salaire brut imposable",
-  "Base imposable", "Cumul brut imposable" uniquement si aucun total du
-  mois n'est demandé ; privilégie toujours la ligne de la période courante.
-- total_retenues : "Total retenues", "Total des retenues",
-  "Total cotisations", "Total des cotisations et contributions",
-  "Retenues salariales". Ne prends pas une retenue
-  individuelle (IR, CNSS, AMO, CIMR, mutuelle, avance ou prêt). Si le tableau
-  sépare "Part salariale" et "Part patronale", total_retenues désigne seulement
-  le total salarial retenu au salarié ; ignore la part patronale.
-  Si le document affiche séparément "Total des retenues déductibles" et
-  "Total des retenues non déductibles", leur somme constitue total_retenues.
-- salaire_net : "Salaire net", "Net à payer", "Net payé", "Net du mois",
-  "Net imposable" SEULEMENT si le document l'utilise explicitement comme
-  montant final ; sinon net imposable et net à payer sont différents.
-- devise : "MAD", "DH", "DHS", "Dirham", "Dirhams marocains", "EUR",
-  "euro" ou "euros". Ne retourne jamais MAD pour un montant explicitement
-  libellé en euros.
+RÈGLES D'ASSOCIATION
 
-METHODE D'EXTRACTION
+- employeur : raison sociale située dans l'en-tête ou après "Société",
+  "Entreprise", "Employeur" ou "Raison sociale". N'utilise jamais le nom du
+  salarié, une banque, une agence, une direction, un département ou un
+  signataire. Un logo seul n'est pas une preuve.
+- date_embauche : valeur associée à "Date d'embauche", "Date d'entrée",
+  "Entrée", "Date de recrutement" ou "Début de contrat". Ne prends jamais
+  la date de naissance, la date d'ancienneté, la date d'édition ou la date de
+  paiement.
+- salaire_net : montant courant associé à "Salaire net", "Net à payer",
+  "Net payé", "Net du mois" ou "Net à payer avant impôt". Ne le confonds
+  jamais avec salaire de base, brut, net imposable, total cotisations,
+  charges patronales, coût global, cumul annuel ou nombre d'heures. Si un
+  montant final apparaît plusieurs fois, choisis la valeur de la période
+  mensuelle et non celle de la ligne Année/Cumul.
+- periode : mois/année ou plage associée à "Période" ou "Période de paie".
+  Une date d'impression ou de paiement n'est pas la période.
+- poste : valeur associée à "Poste", "Fonction", "Emploi" ou "Emploi
+  occupé". Une direction ou un département n'est pas un poste.
+- nom/prenom : identité du salarié, éventuellement précédée de Mme, Mlle,
+  Madame, M. ou Monsieur. Retire le matricule placé avant l'identité. Ne
+  prends jamais le directeur, le responsable RH ou le signataire. Si la
+  séparation est incertaine, conserve l'identité complète dans nom, mets
+  prenom à null et diminue la confiance.
 
-A. Cherche d'abord le libellé, puis la valeur dans la même cellule, la cellule
-   immédiatement à droite ou la ligne immédiatement en dessous.
-B. Pour une ligne de tableau, respecte les colonnes Libellé/Base/Taux/Gain/
-   Retenue ou Libellé/Base/Taux/A déduire/A payer. Un nombre d'heures dans
-   Base (par exemple 151,67) ou un taux horaire n'est pas salaire_base :
-   salaire_base est le montant de la dernière cellule « A payer » de la ligne.
-C. La zone "Cumuls" ou "Année" contient des agrégats historiques : ne les
-   utilise pas à la place du montant de la période courante. Dans un tableau
-   Période/Année, sélectionne exclusivement la ligne Période.
-D. source.quote doit contenir le libellé et la valeur. Si la citation ne
-   permet pas de vérifier l'association, retourne null.
-E. Corrige seulement les séparateurs OCR évidents dans les nombres :
-   "29 534,00" -> 29534.0. Ne reconstitue aucun chiffre manquant.
-F. Les intitulés de colonnes peuvent être suivis de leur ligne de valeurs :
-   par exemple Fonction/Département/Type salaire/Matricule puis
-   Conseiller/Production/Mensuel/103992. Associe chaque valeur à sa colonne,
-   sans la chercher immédiatement après son propre libellé.
+MÉTHODE
 
-1. "Salaire net", "Net à payer" et "Net payé" peuvent désigner salaire_net.
-   Prends uniquement le montant de la cellule associée.
-2. Ne confonds jamais salaire_net avec salaire_brut, brut imposable,
-   salaire principal, total retenues, une ligne de gain ou un cumul.
-3. "Salaire principal" ou "salaire de base" peut alimenter salaire_base.
-   "Salaire horaire" peut aussi alimenter salaire_base lorsque c'est la seule
-   base salariale explicitement présentée. Une prime, allocation ou indemnité
-   n'est pas le salaire de base.
-4. "Total brut" ou "Salaire brut" désigne salaire_brut. "Salaire brut
-   imposable" ou "Brut imposable" désigne brut_imposable.
-5. total_retenues est le total explicitement affiché sous "Total retenues",
-   "Total des retenues" ou "Total cotisations". Ne le recalcule pas.
-6. La période peut être "9/2023", "septembre 2023", "Janvier 2026" ou
-   une plage comme "Période du 01/05/24 au 31/05/24".
-7. Si le nom complet est lisible mais sa séparation est incertaine, conserve
-   la chaîne dans nom, mets prenom à null et utilise une confiance faible.
-8. L'employeur peut être indiqué dans l'en-tête ou dans une zone "Société".
-   Cite uniquement un texte
-   effectivement reconnu par l'OCR, jamais le logo seul.
-9. La devise vaut MAD/DH uniquement si le document l'indique clairement.
-10. Une date d'impression comme "Rabat le ..." n'est pas date_embauche.
-11. Les valeurs de la zone "Cumuls" sont historiques : elles ne doivent
-    jamais remplacer les totaux de la période courante.
-
-Si une valeur est absente ou illisible, retourne value: null,
-confidence: 0.0 et source: null. Ne calcule aucun total.
+- Respecte les colonnes et les lignes du tableau : cherche la valeur dans la
+  même cellule, immédiatement à droite, ou sur la ligne de valeurs située
+  sous les en-têtes.
+- source.quote doit reproduire une courte citation OCR contenant le libellé
+  et la valeur, ou une ligne structurelle permettant leur association.
+- Corrige uniquement les séparateurs numériques évidents :
+  "29 534,00" devient 29534.0. N'invente aucun chiffre et ne calcule aucun
+  montant.
+- Ignore les champs non demandés, même s'ils sont faciles à lire.
+- Si une valeur est absente, ambiguë ou non prouvée, retourne value: null,
+  confidence: 0.0 et source: null.
 
 Texte OCR :
 
@@ -290,43 +239,20 @@ Le document est un relevé bancaire marocain, éventuellement bilingue.
 Le séparateur " | " représente les cellules d'une même ligne. Respecte
 impérativement les colonnes DEBIT et CREDIT.
 
-Pour tous les champs numériques racine, retourne un nombre JSON sans unité :
-16191 et non "16191 DH". La devise est stockée séparément.
-
 Extrais au format {{ "value": ..., "confidence": ..., "source": ... }} :
-nom, prenom, banque, agence, titulaire_adresse, numero_compte, iban,
-periode_debut, periode_fin, solde_initial, solde_final et devise.
+banque, periode_debut et periode_fin.
 charge_mensuelle_credits et revenus_complementaires restent toujours null :
 ils sont calculés côté serveur à partir des transactions prouvées.
 
-REGLES D'EN-TETE
-
-ASSOCIATION DES LIBELLES (variantes possibles)
-
-- nom/prenom : "Nom", "Prénom", "Nom/Raison sociale", "Titulaire",
-  "Client", "Intitulé du compte". Pour une personne morale, conserve la
-  raison sociale dans nom et laisse prenom à null.
-- banque : nom de l'établissement dans l'en-tête, par exemple après
-  "Banque". Ne prends jamais le nom d'une banque cité dans une opération.
-- agence : "Agence", "Votre agence", "Domiciliation", "Centre d'affaires".
-  Le code agence peut accompagner le nom mais ne remplace pas celui-ci.
-- titulaire_adresse : "Adresse", "Domicile", adresse placée immédiatement
-  sous le titulaire. Ne prends ni l'adresse de l'agence ni le siège social
-  imprimé dans le pied de page.
-- numero_compte : "Compte", "N° compte", "Numéro de compte",
-  "N° de compte", ou colonne "N° Compte" d'un RIB.
-- iban : uniquement une valeur explicitement précédée de "IBAN".
-  Un RIB marocain n'est pas automatiquement un IBAN.
-- periode_debut/periode_fin : "Du ... Au ...", "Période du ... au ...",
+- banque : prends uniquement le nom de l'établissement dans l'en-tête. Ne
+  prends jamais une banque citée dans le libellé d'une transaction.
+- periode_debut/periode_fin : utilise "Du ... Au ...", "Période du ... au ...",
   "Relevé du ... au ...". Sur les relevés mensuels Banque Populaire,
   "EXTRAIT DE COMPTE AU [date]" et "NOUVEAU SOLDE AU [date]" indiquent
   periode_fin. La date d'un "ANCIEN SOLDE AU" est antérieure à la période :
   ne l'utilise jamais comme periode_fin.
-- solde_initial : "Solde initial", "Ancien solde", "Solde précédent",
-  "Solde de départ", "Solde au début de période".
-- solde_final : "Nouveau solde", "Solde final", "Solde à nouveau",
-  "Solde au [date]", "Solde en fin de période".
-- devise : "Devise", "MAD", "DH", "Dirham marocain".
+- Ignore le titulaire, l'adresse, l'agence, le numéro de compte, le RIB,
+  l'IBAN, les soldes et la devise : ils ne sont pas utiles à la simulation.
 
 LECTURE DES TABLEAUX
 
@@ -343,29 +269,20 @@ E. Les lignes visuelles peuvent être coupées par l'OCR. Rattache une ligne
    suivante uniquement si elle n'a aucune date et prolonge clairement le
    libellé précédent. Sinon, conserve deux éléments distincts ou ignore la
    ligne ambiguë.
-F. Ne transforme pas tout virement reçu en revenu complémentaire et ne
-   transforme pas tout débit en charge de crédit. Ces deux métriques restent
-   calculées côté serveur à partir de libellés suffisamment explicites.
+F. Ne calcule aucune métrique dans le modèle : extrais fidèlement toutes les
+   opérations et leur colonne Débit/Crédit. Le serveur additionne ensuite les
+   crédits vérifiés en excluant salaire et opérations techniques, et reconnaît
+   les charges de prêt par familles de libellés.
 G. Chaque transaction doit garder page et quote. quote doit reproduire la
    ligne OCR complète contenant date, libellé et montant.
 
-1. RIB, N° de compte ou les colonnes Banque/Ville/N° compte/Clé peuvent
-   identifier numero_compte. Ne fabrique jamais un IBAN à partir d'un RIB.
-2. "Solde initial", "solde départ", "ancien solde" ou "solde précédent"
-   désigne solde_initial. "Nouveau solde", "solde final" ou le récapitulatif
-   "solde au [date]" désigne solde_final.
-3. Une période explicitement affichée sous la forme "Du [date] Au [date]"
+1. Une période explicitement affichée sous la forme "Du [date] Au [date]"
    alimente periode_debut et periode_fin. "EXTRAIT DE COMPTE AU [date]" ou
    "NOUVEAU SOLDE AU [date]" alimente periode_fin, mais "ANCIEN SOLDE AU"
    ne l'alimente jamais. Sinon, ne déduis pas automatiquement la période
    depuis les dates des opérations.
-4. Dirham marocain, MAD et DH correspondent à MAD.
-5. Ne confonds pas l'adresse du titulaire avec celle de l'agence.
-6. Quand l'OCR aplatit un en-tête Banque Populaire du type
-   "Agence | MAARIF | MME LAALEJ NADA Adresse | ...", récupère l'agence,
-   le nom, le prénom et l'adresse dans ces cellules successives. Dans le
-   tableau RIB, "190 | 780 | [numéro de compte] | 76" fournit
-   numero_compte ; il ne fournit pas iban.
+2. Les lignes de solde initial/final et de total de mouvements servent à
+   comprendre le tableau, mais ne doivent jamais devenir des transactions.
 
 EXEMPLES DE TRANSACTIONS
 
@@ -400,6 +317,8 @@ REGLES DE TRANSACTION
 6. Le salaire est une transaction de crédit, jamais un revenu complémentaire.
 7. Retraits, paiements carte et frais ne sont pas des mensualités de crédit.
    Une charge exige un libellé explicite d'échéance, prêt ou mensualité.
+8. Extrais toutes les occurrences, même lorsqu'un même libellé ou bénéficiaire
+   apparaît plusieurs fois. Ne t'arrête jamais à la première transaction.
 
 Si une information est absente ou illisible, retourne null. N'invente aucune
 transaction.

@@ -14,6 +14,15 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 
 FALLBACK_CONFIDENCE = 0.78
+PAYROLL_TARGET_FIELDS = (
+    "nom",
+    "prenom",
+    "employeur",
+    "poste",
+    "date_embauche",
+    "periode",
+    "salaire_net",
+)
 
 
 def _plain(text: str) -> str:
@@ -363,9 +372,13 @@ def _fill_gross_from_earning_rows(data: Dict[str, Any], ocr_text: str) -> None:
 
 
 def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str, Any]:
-    """Complète uniquement les champs bulletin absents, sans écraser le LLM."""
+    """Complète les sept champs utiles du bulletin, sans écraser le LLM."""
 
-    result = dict(data)
+    result = {
+        key: value
+        for key, value in data.items()
+        if key == "document_type" or key in PAYROLL_TARGET_FIELDS
+    }
     # Un champ LLM sans citation réellement présente dans l'OCR ne doit pas
     # bloquer le secours : ValidationAgent le viderait quelques millisecondes
     # plus tard. Les valeurs correctement sourcées restent prioritaires.
@@ -591,6 +604,30 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
                 birth_hire_row.group(2), text, birth_hire_row, confidence=0.78
             )
 
+    # Tableau aplati « SOCIÉTÉ | EMPLOYÉ / société | matricule NOM Prénom ».
+    # On borne le prénom avant l'en-tête suivant pour éviter de capturer
+    # « Fonction » comme prénom.
+    company_employee_identity = _search(
+        text,
+        r"SOCI[ÉE]T[ÉE]\s*\|\s*EMPLOY[ÉE]E?\s+[^|]{2,100}\|\s*"
+        r"\d{2,10}[A-Z]?\s+([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'\-]{1,35})\s+"
+        r"([A-ZÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,35})"
+        r"(?=\s+(?:Fonction|Situation|N[°º]\s*CIN)\b|\s*\|)",
+    )
+    if company_employee_identity:
+        result["nom"] = _field(
+            company_employee_identity.group(1).upper(),
+            text,
+            company_employee_identity,
+            0.90,
+        )
+        result["prenom"] = _field(
+            company_employee_identity.group(2).title(),
+            text,
+            company_employee_identity,
+            0.90,
+        )
+
     # Format fréquent : matricule, nom du salarié, puis « Classe ».
     employee = _search(text, r"\b([0-9]{3,8}[A-Z]?)\s+([A-ZÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ' -]{2,60}?)\s+Classe\b")
     if employee:
@@ -627,10 +664,10 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
     if _missing(result, "matricule") or _missing(result, "nom") or _missing(result, "prenom"):
         employee_number_identity = _search(
             text,
-            r"\bEMPLOY[ÉE]E?\s*\|?\s*(\d{2,8}[A-Z]?)\s+"
-            r"([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'\-]{1,35})\s+"
-            r"([A-ZÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,35})"
-            r"(?=\s*(?:\||Casablanca\b|Rabat\b|Tanger\b|Agadir\b))",
+        r"\bEMPLOY[ÉE]E?\s*\|?\s*(\d{2,8}[A-Z]?)\s+"
+        r"([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ'\-]{1,35})\s+"
+        r"([A-ZÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{1,35})"
+        r"(?=\s*(?:\||Fonction\b|Casablanca\b|Rabat\b|Tanger\b|Agadir\b))",
         )
         if employee_number_identity:
             if _missing(result, "matricule"):
@@ -906,4 +943,8 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
         elif morocco:
             result["devise"] = _field("MAD", text, morocco, confidence=0.72)
 
-    return result
+    return {
+        key: value
+        for key, value in result.items()
+        if key == "document_type" or key in PAYROLL_TARGET_FIELDS
+    }
