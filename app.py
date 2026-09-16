@@ -1153,6 +1153,375 @@ def inject_app_styles():
             .ca-hero h1 { font-size: 2.15rem; }
             .cam-hero-trust { display: none; }
         }
+
+        /* ==================================================
+           ACCUEIL — PARCOURS PREMIUM INSPIRÉ DU SITE CAM
+           ================================================== */
+        :root {
+            --cam-gold: #c6a04b;
+            --cam-cream: #f7f4ec;
+            --cam-ink: #112d23;
+        }
+        .stApp {
+            background: var(--cam-cream);
+        }
+        .block-container {
+            width: min(100%, 1680px);
+            max-width: 1680px;
+            padding: 0 2.4rem 3.5rem;
+        }
+        .cam-site-header {
+            display: block;
+            margin-inline: -2.4rem;
+        }
+        .cam-utility-bar {
+            min-height: 3.45rem;
+            padding-inline: clamp(1.5rem, 7vw, 7rem);
+            background: #063526;
+        }
+        .cam-corporate {
+            color: #ffffff;
+            font-size: .78rem;
+            letter-spacing: .015em;
+            text-transform: none;
+        }
+        .cam-universe {
+            color: #123627;
+            background: var(--cam-gold);
+        }
+        .cam-secure {
+            border-color: rgba(255,255,255,.22);
+            color: rgba(255,255,255,.9);
+        }
+        .st-key-cam_top_navigation {
+            margin-inline: -2.4rem;
+            padding: 0 clamp(1.4rem, 7vw, 7rem);
+            border: 0;
+            border-bottom: 1px solid #e7e2d7;
+            background: #ffffff;
+            box-shadow: none;
+        }
+        .st-key-cam_top_navigation [data-testid="stHorizontalBlock"] {
+            min-height: 5.2rem;
+            gap: 0;
+        }
+        .st-key-cam_top_navigation .stButton > button,
+        .st-key-cam_top_navigation [data-testid="stPopover"] > button {
+            min-height: 5.15rem;
+            border-right: 1px solid #ece8df;
+            color: #405048;
+            background: #ffffff;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: .82rem;
+            font-weight: 650;
+            letter-spacing: 0;
+            text-transform: none;
+        }
+        .st-key-cam_top_navigation .stButton > button[kind="primary"] {
+            color: #0a4935;
+            border-bottom: 3px solid var(--cam-gold);
+            background: #ffffff;
+        }
+        .st-key-cam_top_navigation .stButton > button:disabled {
+            color: #8e978f !important;
+            opacity: 1;
+            background: #ffffff !important;
+        }
+        .st-key-cam_top_navigation [data-testid="column"]:last-child
+        [data-testid="stPopover"] > button {
+            border: 0;
+            border-left: 1px solid #ece8df;
+            border-radius: 0;
+            color: #143c2d;
+            background: #ffffff;
+            box-shadow: none;
+        }
+        .st-key-top_nav_logo button {
+            min-height: 5.15rem !important;
+            padding-left: 5.25rem !important;
+            background-position: left 1rem center !important;
+            background-size: 3.1rem auto !important;
+        }
+        .cam-breadcrumb {
+            padding: 1.4rem clamp(.2rem, 2vw, 1.2rem) 1.1rem;
+            font-size: .79rem;
+        }
+
+        .st-key-cam_home_experience {
+            margin: .2rem auto 0;
+            overflow: hidden;
+            border: 1px solid rgba(20,61,45,.08);
+            border-radius: 1.7rem;
+            background: #ffffff;
+            box-shadow: 0 24px 60px rgba(15,55,40,.14);
+        }
+        .st-key-cam_home_experience > div > div[data-testid="stHorizontalBlock"] {
+            gap: 0;
+        }
+        .st-key-cam_home_experience [data-testid="column"] {
+            min-width: 0;
+        }
+        .st-key-cam_home_intro {
+            min-height: 590px;
+            padding: clamp(3rem, 5vw, 5rem) clamp(2.3rem, 5vw, 5rem) 2.3rem;
+            color: #ffffff;
+            background:
+                radial-gradient(circle at 95% 2%, rgba(198,160,75,.12), transparent 18rem),
+                #0b412f;
+        }
+        .st-key-cam_home_journey {
+            min-height: 590px;
+            padding: clamp(2.8rem, 4vw, 4.1rem) clamp(2rem, 4vw, 3.7rem) 2.2rem;
+            color: var(--cam-ink);
+            background: #fffdf8;
+        }
+        .cam-home-intro-copy .ca-eyebrow {
+            display: flex;
+            align-items: center;
+            gap: .7rem;
+            color: var(--cam-gold);
+            font-size: .82rem;
+            font-weight: 700;
+            letter-spacing: .015em;
+            text-transform: none;
+        }
+        .cam-home-intro-copy .ca-eyebrow span {
+            width: .48rem;
+            height: .48rem;
+            border-radius: 50%;
+            background: var(--cam-gold);
+        }
+        .cam-home-intro-copy h1 {
+            max-width: 690px;
+            margin: 1.5rem 0 1.5rem;
+            color: #ffffff;
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: clamp(3rem, 4.6vw, 5rem);
+            font-weight: 500;
+            letter-spacing: -.035em;
+            line-height: .98;
+            text-transform: none;
+        }
+        .cam-home-intro-copy p {
+            max-width: 720px;
+            margin-bottom: 1.7rem;
+            color: rgba(255,255,255,.83);
+            font-size: 1.06rem;
+            line-height: 1.55;
+        }
+        .st-key-cam_home_intro .stButton > button {
+            min-height: 3.2rem;
+            border-radius: .65rem;
+            border-color: rgba(255,255,255,.25);
+            color: #ffffff;
+            background: transparent;
+            box-shadow: none;
+        }
+        .st-key-cam_home_intro .stButton > button[kind="primary"] {
+            border-color: var(--cam-gold);
+            color: #123828;
+            background: var(--cam-gold);
+        }
+        .cam-hero-trust {
+            display: flex;
+            justify-content: space-between;
+            gap: .8rem 1.2rem;
+            margin-top: 1.65rem;
+            padding-top: 1.35rem;
+            border-top: 1px solid rgba(255,255,255,.18);
+            color: rgba(255,255,255,.72);
+            font-size: .76rem;
+        }
+        .cam-journey-kicker {
+            color: #9b762c;
+            font-size: .72rem;
+            font-weight: 800;
+            letter-spacing: .07em;
+        }
+        .cam-journey-title {
+            margin: .55rem 0 .25rem;
+            color: #102f24;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 1.28rem;
+            font-weight: 800;
+        }
+        .cam-journey-subtitle {
+            color: #89948d;
+            font-size: .82rem;
+        }
+        .cam-journey-progress {
+            height: .42rem;
+            margin: 2rem 0 1.35rem;
+            overflow: hidden;
+            border-radius: 999px;
+            background: #eeeade;
+        }
+        .cam-journey-progress span {
+            display: block;
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #0b6749, var(--cam-gold));
+        }
+        .cam-journey-list {
+            position: relative;
+        }
+        .cam-journey-list::before {
+            content: "";
+            position: absolute;
+            top: 2rem;
+            bottom: 2rem;
+            left: 1.24rem;
+            width: 1px;
+            background: #ded8c9;
+        }
+        .cam-journey-row {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: 2.55rem minmax(0, 1fr) auto;
+            align-items: center;
+            gap: .85rem;
+            min-height: 4.55rem;
+            border: 0;
+            color: #6f7973;
+            font-size: .82rem;
+        }
+        .cam-journey-number {
+            display: grid;
+            place-items: center;
+            width: 2.35rem;
+            height: 2.35rem;
+            border: 1px solid #d9d3c5;
+            border-radius: 50%;
+            color: #8d9790;
+            background: #fffdf8;
+            font-size: .76rem;
+            font-weight: 800;
+        }
+        .cam-journey-copy {
+            display: flex;
+            flex-direction: column;
+            gap: .22rem;
+        }
+        .cam-journey-copy strong {
+            color: #32453d;
+            font-size: .92rem;
+        }
+        .cam-journey-copy small {
+            color: #909991;
+            font-size: .76rem;
+        }
+        .cam-journey-row.is-current .cam-journey-number,
+        .cam-journey-row.is-done .cam-journey-number {
+            border-color: #0b5f45;
+            color: #ffffff;
+            background: #0b5f45;
+            box-shadow: 0 0 0 5px rgba(11,95,69,.09);
+        }
+        .cam-journey-row.is-current .cam-journey-copy strong,
+        .cam-journey-row.is-done .cam-journey-copy strong {
+            color: #102f24;
+        }
+        .cam-journey-state {
+            padding: .42rem .72rem;
+            border-radius: 999px;
+            color: #8a938d;
+            background: #f1eee5;
+            font-size: .64rem;
+            font-weight: 800;
+            letter-spacing: .035em;
+        }
+        .cam-journey-row.is-current .cam-journey-state {
+            color: #173d2f;
+            background: var(--cam-gold);
+        }
+        .cam-journey-row.is-done .cam-journey-state {
+            color: #176347;
+            background: #e4f1eb;
+        }
+        .st-key-cam_home_journey .stButton > button {
+            min-height: 3rem;
+            border-radius: .65rem;
+            background: #083d2d;
+            box-shadow: none;
+        }
+        .st-key-cam_home_journey [data-testid="stCaptionContainer"] {
+            color: #8a948e;
+        }
+        .st-key-cam_assurance_strip {
+            margin: 4.5rem auto 1.6rem;
+            overflow: hidden;
+            border: 1px solid #e1dbce;
+            border-radius: 1.1rem;
+            background: #fffdf9;
+        }
+        .st-key-cam_assurance_strip [data-testid="stHorizontalBlock"] {
+            gap: 0;
+        }
+        .st-key-cam_assurance_strip [data-testid="column"] + [data-testid="column"] {
+            border-left: 1px solid #e1dbce;
+        }
+        .cam-assurance-item {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            min-height: 6.5rem;
+            padding: 1.35rem 1.7rem;
+        }
+        .cam-assurance-icon {
+            display: grid;
+            flex: 0 0 2.8rem;
+            place-items: center;
+            width: 2.8rem;
+            height: 2.8rem;
+            border-radius: .7rem;
+            color: #14533e;
+            background: #eee9dd;
+            font-size: 1.25rem;
+        }
+        .cam-assurance-item strong {
+            color: #163a2d;
+            font-size: .9rem;
+        }
+        .cam-assurance-item p {
+            margin: .28rem 0 0;
+            color: #78857e;
+            font-size: .75rem;
+            line-height: 1.45;
+        }
+        @media (max-width: 1050px) {
+            .block-container { padding-inline: 1.2rem; }
+            .cam-site-header,
+            .st-key-cam_top_navigation { margin-inline: -1.2rem; }
+            .st-key-cam_home_experience > div > div[data-testid="stHorizontalBlock"] {
+                flex-direction: column;
+            }
+            .st-key-cam_home_experience [data-testid="column"] {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+            }
+            .st-key-cam_home_intro,
+            .st-key-cam_home_journey { min-height: auto; }
+            .st-key-cam_assurance_strip [data-testid="stHorizontalBlock"] {
+                flex-direction: column;
+            }
+            .st-key-cam_assurance_strip [data-testid="column"] {
+                width: 100% !important;
+            }
+            .st-key-cam_assurance_strip [data-testid="column"] + [data-testid="column"] {
+                border-top: 1px solid #e1dbce;
+                border-left: 0;
+            }
+        }
+        @media (max-width: 760px) {
+            .cam-utility-actions { gap: .35rem; }
+            .cam-universe, .cam-secure { padding: .4rem .58rem; }
+            .cam-home-intro-copy h1 { font-size: 2.7rem; }
+            .st-key-cam_home_intro,
+            .st-key-cam_home_journey { padding: 2.2rem 1.35rem; }
+            .cam-hero-trust { display: grid; }
+            .cam-journey-state { padding-inline: .45rem; font-size: .56rem; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1563,7 +1932,7 @@ def render_header():
         """
         <header class="cam-site-header">
             <div class="cam-utility-bar">
-                <span class="cam-corporate">GROUPE CRÉDIT AGRICOLE DU MAROC</span>
+                <span class="cam-corporate">Groupe Crédit Agricole du Maroc</span>
                 <div class="cam-utility-actions">
                     <span class="cam-universe">UNIVERS CAM</span>
                     <span class="cam-secure">&#128274; PARCOURS SÉCURISÉ</span>
@@ -1589,6 +1958,12 @@ def render_header():
         )
 
     account_ready = bool(st.session_state.account_created)
+    profile = st.session_state.get("customer_profile", {})
+    initials = "".join(
+        str(value).strip()[:1].upper()
+        for value in (profile.get("prenom"), profile.get("nom"))
+        if value
+    ) or "CL"
     documents = current_client_documents() if account_ready else {}
     required_types = {"carte_identite", "bulletin", "releve"}
     documents_ready = account_ready and required_types.issubset(
@@ -1613,7 +1988,7 @@ def render_header():
         )
         with nav_logo:
             if st.button(
-                "CRÉDIT AGRICOLE DU MAROC",
+                "Crédit Agricole du Maroc",
                 width="stretch",
                 key="top_nav_logo",
                 help="Retour à l'accueil",
@@ -1623,8 +1998,7 @@ def render_header():
                 st.rerun()
         with nav_project:
             if st.button(
-                "MON PROJET",
-                icon=":material/home:",
+                "1  Mon projet",
                 width="stretch",
                 type="primary" if st.session_state.page == "Accueil" else "secondary",
                 key="top_nav_project",
@@ -1634,8 +2008,7 @@ def render_header():
                 st.rerun()
         with nav_docs:
             if st.button(
-                "JUSTIFICATIFS",
-                icon=":material/description:",
+                "2  Justificatifs",
                 width="stretch",
                 type="primary" if st.session_state.page == "Extraction" else "secondary",
                 key="top_nav_documents",
@@ -1645,8 +2018,7 @@ def render_header():
                 st.rerun()
         with nav_check:
             if st.button(
-                "VÉRIFICATION",
-                icon=":material/fact_check:",
+                "3  Vérification",
                 width="stretch",
                 type="primary" if st.session_state.page == "Verification" else "secondary",
                 key="top_nav_verification",
@@ -1656,8 +2028,7 @@ def render_header():
                 st.rerun()
         with nav_sim:
             if st.button(
-                "SIMULATION",
-                icon=":material/calculate:",
+                "4  Simulation",
                 width="stretch",
                 type="primary" if st.session_state.page == "Simulation" else "secondary",
                 key="top_nav_simulation",
@@ -1667,8 +2038,7 @@ def render_header():
                 st.rerun()
         with nav_estimate:
             if st.button(
-                "ESTIMATION",
-                icon=":material/finance:",
+                "5  Estimation",
                 width="stretch",
                 type="primary" if st.session_state.page == "Estimation" else "secondary",
                 key="top_nav_estimation",
@@ -1677,7 +2047,7 @@ def render_header():
                 _go_to("Estimation")
                 st.rerun()
         with nav_space:
-            with st.popover("MON ESPACE", width="stretch"):
+            with st.popover(f"{initials}  Mon espace", width="stretch"):
                 if account_ready:
                     profile = st.session_state.customer_profile
                     display_name = " ".join(
@@ -1778,13 +2148,7 @@ def render_header():
 
 
 def render_cam_hero(eyebrow, title, text, badge):
-    """Afficher la bannière habitat avec un fond local et un repli sans image."""
-    hero_image = image_to_data_url("assets/offres/offre_habitat.png")
-    style = (
-        f' style=\'--cam-hero-image: url("{hero_image}")\''
-        if hero_image else ""
-    )
-
+    """Afficher l'accueil principal et l'avancement réel du dossier."""
     account_ready = bool(st.session_state.account_created)
     project_ready = False
     documents_ready = False
@@ -1803,24 +2167,26 @@ def render_cam_hero(eyebrow, title, text, badge):
         except Exception:
             dossier_complete = False
 
+    # La quatrième étape devient disponible lorsque le dossier est complet.
+    # Elle reste l'étape active tant que le client se trouve sur l'accueil.
     completed = [
         project_ready,
         documents_ready,
         dossier_complete,
-        dossier_complete and st.session_state.page == "Simulation",
+        False,
     ]
     active_index = next(
         (index for index, is_done in enumerate(completed) if not is_done),
         3,
     )
-    journey_labels = (
-        "Décrire le projet",
-        "Ajouter les justificatifs",
-        "Vérifier les informations",
-        "Comparer les simulations",
+    journey_steps = (
+        ("Décrire le projet", "Type de bien, montant et apport"),
+        ("Ajouter les justificatifs", "Identité, revenus et relevé bancaire"),
+        ("Vérifier les informations", "Correction et validation avant simulation"),
+        ("Comparer les simulations", "Durées, mensualités et capacité d'emprunt"),
     )
     journey_rows = []
-    for index, label in enumerate(journey_labels):
+    for index, (label, description) in enumerate(journey_steps):
         if completed[index]:
             row_class = "is-done"
             state = "TERMINÉ"
@@ -1829,43 +2195,148 @@ def render_cam_hero(eyebrow, title, text, badge):
             state = "EN COURS" if account_ready else "COMMENCER"
         else:
             row_class = ""
-            state = ""
+            state = "À FAIRE"
         journey_rows.append(
             f"""
             <div class="cam-journey-row {row_class}">
-                <span class="cam-journey-number">{index + 1:02d}</span>
-                <span>{html.escape(label)}</span>
+                <span class="cam-journey-number">{index + 1}</span>
+                <span class="cam-journey-copy">
+                    <strong>{html.escape(label)}</strong>
+                    <small>{html.escape(description)}</small>
+                </span>
                 <span class="cam-journey-state">{state}</span>
             </div>
             """
         )
     journey_html = "".join(journey_rows)
+    current_step = min(sum(completed) + 1, 4)
+    progress_percent = current_step * 25
 
-    st.markdown(
-        f"""
-        <section class="ca-hero"{style}>
-            <div class="cam-hero-grid">
-                <div class="ca-hero-content">
-                    <div class="ca-eyebrow">{html.escape(str(eyebrow))}</div>
-                    <h1>{html.escape(str(title))}</h1>
-                    <p>{html.escape(str(text))}</p>
-                    <span class="ca-tag">{html.escape(str(badge))}</span>
-                    <div class="cam-hero-trust">
-                        <span><i></i>Données protégées</span>
-                        <span><i></i>Validation par le client</span>
-                        <span><i></i>Estimation non contractuelle</span>
+    if not account_ready:
+        primary_label = "Démarrer le parcours"
+    elif not project_ready:
+        primary_label = "Décrire mon projet"
+    elif not documents_ready:
+        primary_label = "Ajouter mes justificatifs"
+    elif not dossier_complete:
+        primary_label = "Vérifier mes informations"
+    else:
+        primary_label = "Voir ma simulation"
+
+    def continue_journey():
+        if not account_ready:
+            render_customer_access_dialog()
+        elif not project_ready:
+            st.session_state.editing_home_project = True
+            st.rerun()
+        elif not documents_ready:
+            _go_to("Extraction")
+            st.rerun()
+        elif not dossier_complete:
+            _go_to("Verification")
+            st.rerun()
+        else:
+            _go_to("Simulation")
+            st.rerun()
+
+    with st.container(key="cam_home_experience"):
+        intro_column, journey_column = st.columns([1.35, 1], gap=None)
+
+        with intro_column:
+            with st.container(key="cam_home_intro", height="stretch"):
+                st.markdown(
+                    f"""
+                    <div class="cam-home-intro-copy">
+                        <div class="ca-eyebrow"><span></span>{html.escape(str(eyebrow))}</div>
+                        <h1>{html.escape(str(title))}</h1>
+                        <p>{html.escape(str(text))}</p>
                     </div>
-                </div>
-                <aside class="cam-journey-card">
+                    """,
+                    unsafe_allow_html=True,
+                )
+                primary_action, example_action = st.columns([1.25, 1], gap="small")
+                with primary_action:
+                    if st.button(
+                        primary_label,
+                        icon=":material/arrow_forward:",
+                        type="primary",
+                        width="stretch",
+                        key="cam_home_primary_action",
+                        disabled=st.session_state.processing,
+                    ):
+                        continue_journey()
+                with example_action:
+                    if st.button(
+                        "Faire une estimation",
+                        width="stretch",
+                        key="cam_home_example_action",
+                        disabled=st.session_state.processing,
+                    ):
+                        _go_to("Estimation")
+                        st.rerun()
+                st.markdown(
+                    """
+                    <div class="cam-hero-trust">
+                        <span>♢&nbsp; Données protégées</span>
+                        <span>✓&nbsp; Validation par vos soins</span>
+                        <span>◷&nbsp; Estimation non contractuelle</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        with journey_column:
+            with st.container(key="cam_home_journey", height="stretch"):
+                st.markdown(
+                    f"""
                     <div class="cam-journey-kicker">VOTRE DEMANDE</div>
                     <div class="cam-journey-title">Un parcours guidé, étape par étape</div>
-                    {journey_html}
-                </aside>
-            </div>
-        </section>
-        """,
-        unsafe_allow_html=True,
+                    <div class="cam-journey-subtitle">Étape {current_step} sur 4 · progression enregistrée automatiquement</div>
+                    <div class="cam-journey-progress" role="progressbar" aria-valuenow="{progress_percent}" aria-valuemin="0" aria-valuemax="100">
+                        <span style="width:{progress_percent}%"></span>
+                    </div>
+                    <div class="cam-journey-list">{journey_html}</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                footer_info, footer_action = st.columns([1.1, .9], vertical_alignment="center")
+                with footer_info:
+                    st.caption(f"Progression {current_step}/4 étapes")
+                with footer_action:
+                    if st.button(
+                        "Continuer",
+                        icon=":material/arrow_forward:",
+                        type="primary",
+                        width="stretch",
+                        key="cam_home_continue_action",
+                        disabled=st.session_state.processing,
+                    ):
+                        continue_journey()
+
+
+def render_home_assurance_strip():
+    """Afficher les trois garanties principales sous le parcours d'accueil."""
+    items = (
+        ("⌑", "Données traitées localement", "Vos documents restent dans l'environnement de démonstration."),
+        ("◷", "Reprenez à tout moment", "Votre projet et votre progression sont enregistrés."),
+        ("⌂", "Simulation immédiate", "Comparez plusieurs scénarios de financement sans engagement."),
     )
+    with st.container(key="cam_assurance_strip"):
+        columns = st.columns(3, gap=None)
+        for column, (icon, title, description) in zip(columns, items):
+            with column:
+                st.markdown(
+                    f"""
+                    <article class="cam-assurance-item">
+                        <div class="cam-assurance-icon">{icon}</div>
+                        <div>
+                            <strong>{html.escape(title)}</strong>
+                            <p>{html.escape(description)}</p>
+                        </div>
+                    </article>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
 
 def render_article_card(icon, title, text, tag):
@@ -2929,40 +3400,14 @@ if st.session_state.page == "Conseiller":
 elif st.session_state.page == "Accueil":
     if not st.session_state.account_created:
         render_cam_hero(
-            "CRÉDIT HABITAT · ESPACE CLIENT",
+            "Crédit habitat · Espace client",
             "Commençons votre projet habitat",
             "Créez votre espace personnel pour sauvegarder vos justificatifs, "
-            "reprendre votre parcours et affiner votre simulation.",
-            "ACCOMPAGNEMENT DIGITAL · DONNÉES PROTÉGÉES",
+            "reprendre votre parcours à tout moment et affiner votre simulation "
+            "en toute autonomie.",
+            "Données protégées · Validation par vos soins",
         )
-        render_offers_carousel()
-
-        st.markdown(
-            '<div class="ca-section-title">Un parcours simple et sécurisé</div>',
-            unsafe_allow_html=True,
-        )
-        benefit_columns = st.columns(3, gap="large")
-        with benefit_columns[0]:
-            render_article_card(
-                "🏠",
-                "Décrivez votre projet",
-                "Renseignez votre bien, votre budget, votre apport et la durée souhaitée.",
-                "ÉTAPE 01",
-            )
-        with benefit_columns[1]:
-            render_article_card(
-                "📄",
-                "Ajoutez vos justificatifs",
-                "Vérifiez et corrigez chaque information détectée avant son utilisation.",
-                "ÉTAPE 02",
-            )
-        with benefit_columns[2]:
-            render_article_card(
-                "📊",
-                "Comparez vos scénarios",
-                "Estimez votre mensualité et votre capacité d'emprunt sans engagement.",
-                "ÉTAPE 03",
-            )
+        render_home_assurance_strip()
         st.stop()
 
     client_docs = current_client_documents()
@@ -3000,11 +3445,12 @@ elif st.session_state.page == "Accueil":
         hero_badge = "PARCOURS SÉCURISÉ · VALIDATION PAR LE CLIENT"
 
     render_cam_hero(
-        "CRÉDIT HABITAT · ESPACE PERSONNEL",
+        "Crédit habitat · Espace personnel",
         hero_title,
         hero_text,
         hero_badge,
     )
+    render_home_assurance_strip()
 
     # -----------------------------------------------------
     # SYNTHÈSE OU FORMULAIRE DU PROJET
