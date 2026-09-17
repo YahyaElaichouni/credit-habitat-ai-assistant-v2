@@ -229,7 +229,7 @@ def render_header():
     documents = current_client_documents() if account_ready else {}
     required_types = {"carte_identite", "bulletin", "releve"}
     documents_ready = account_ready and required_types.issubset(
-        completed_document_types(documents)
+        reviewed_document_types(documents)
     )
     dossier_complete = False
     if account_ready:
@@ -423,7 +423,7 @@ def render_cam_hero(eyebrow, title, text, badge):
             project_ready = False
         documents = current_client_documents()
         required_types = {"carte_identite", "bulletin", "releve"}
-        documents_ready = required_types.issubset(completed_document_types(documents))
+        documents_ready = required_types.issubset(reviewed_document_types(documents))
         try:
             _, _, dossier_complete, _ = dossier_readiness()
         except Exception:
@@ -638,23 +638,24 @@ def reviewed_document_types(documents=None):
 
 
 def required_documents_ready(documents=None):
+    """Les justificatifs obligatoires sont prêts après validation humaine."""
     documents = documents if documents is not None else current_client_documents()
     required_types = {"carte_identite", "bulletin", "releve"}
-    return required_types.issubset(completed_document_types(documents))
+    return required_types.issubset(reviewed_document_types(documents))
 
 
 def credit_journey_step(documents=None):
-    """Déterminer automatiquement la prochaine étape du parcours de crédit."""
+    """Rester sur un justificatif jusqu'à sa validation par le client."""
     documents = documents if documents is not None else current_client_documents()
-    completed_types = completed_document_types(documents)
+    reviewed_types = reviewed_document_types(documents)
 
     for index, document_step in enumerate(DOCUMENT_JOURNEY[:3]):
         document_type = document_step["type"]
-        if document_type not in completed_types:
+        if document_type not in reviewed_types:
             return index
 
     if not st.session_state.get("compromis_skipped", False):
-        if "compromis" not in completed_types:
+        if "compromis" not in reviewed_types:
             return 3
 
     _, information_ready = build_client_summary(documents)
@@ -691,24 +692,30 @@ def render_guided_document_review(document_id, document, journey_step, advisor_i
     """Afficher, à la demande, la relecture détaillée d'un document."""
     result = document.get("result") or {}
     control_result = result.get("control_result", {})
+    already_reviewed = document.get("journey_reviewed") is True
 
     title_col, close_col = st.columns([5, 1])
     with title_col:
         st.subheader(f"Détails — {document.get('filename', 'Document')}")
     with close_col:
-        if st.button(
-            "Fermer",
-            icon=":material/close:",
-            key=f"close_document_review_{document_id}",
-            width="stretch",
-        ):
-            st.session_state.current_doc_id = None
-            st.session_state.last_result = None
-            st.session_state.confirmed_fields = {}
-            st.rerun()
+        if already_reviewed:
+            if st.button(
+                "Fermer",
+                icon=":material/close:",
+                key=f"close_document_review_{document_id}",
+                width="stretch",
+            ):
+                st.session_state.current_doc_id = None
+                st.session_state.last_result = None
+                st.session_state.confirmed_fields = {}
+                st.rerun()
+        else:
+            st.badge("À vérifier", color="orange", icon=":material/rate_review:")
     st.caption(
-        "Cette relecture détaillée est facultative. Les 5 informations utiles à la "
-        "simulation seront regroupées dans un seul tableau à l'étape Vérification."
+        "Comparez les informations détectées avec le justificatif, corrigez-les "
+        "si nécessaire, puis validez pour accéder au document suivant."
+        if not already_reviewed else
+        "Vous pouvez modifier à nouveau les informations enregistrées pour ce justificatif."
     )
 
     if not control_result.get("valid", False):
@@ -998,10 +1005,7 @@ def dossier_readiness():
         "bulletin": "Bulletin de paie",
         "releve": "Relevé bancaire",
     }
-    available_types = {
-        document.get("type") for document in documents.values()
-        if document.get("status") == "completed"
-    }
+    available_types = reviewed_document_types(documents)
     missing.extend(label for doc_type, label in required_documents.items()
                    if doc_type not in available_types)
     return documents, rows, business_complete and not missing, missing
@@ -1019,7 +1023,7 @@ def render_application_sidebar():
         {"carte_identite", "bulletin", "releve"} - completed_types
     )
     required_types = {"carte_identite", "bulletin", "releve"}
-    documents_ready = required_types.issubset(completed_types)
+    documents_ready = required_types.issubset(reviewed_document_types(documents))
 
     saved_project = {}
     if account_ready:
@@ -1257,7 +1261,7 @@ elif st.session_state.page == "Accueil":
     completed_types = completed_document_types(client_docs)
     required_types = {"carte_identite", "bulletin", "releve"}
     completed_required = len(required_types & completed_types)
-    documents_ready = required_types.issubset(completed_types)
+    documents_ready = required_types.issubset(reviewed_document_types(client_docs))
     _, summary_rows, dossier_complete, missing_items = dossier_readiness()
     saved_project = (
         load_project(st.session_state.current_client_id)
@@ -1529,12 +1533,43 @@ elif st.session_state.page == "Extraction":
     journey_step = credit_journey_step(client_docs)
     _, _, dossier_complete, _ = dossier_readiness()
 
+    # Si l'analyse d'un document est terminée mais que le client ne l'a pas
+    # encore validé, rouvrir automatiquement sa fiche. Ainsi, un rerun ou une
+    # reconnexion ne peut pas faire avancer silencieusement le parcours.
+    selected_document = st.session_state.documents.get(
+        st.session_state.current_doc_id
+    )
+    if not selected_document and journey_step < len(DOCUMENT_JOURNEY):
+        active_document_type = DOCUMENT_JOURNEY[journey_step]["type"]
+        pending_reviews = [
+            (document_id, document)
+            for document_id, document in client_docs.items()
+            if document.get("type") == active_document_type
+            and document.get("status") == "completed"
+            and document.get("journey_reviewed") is not True
+            and document.get("result")
+        ]
+        pending_reviews.sort(
+            key=lambda item: item[1].get("timestamp") or "",
+            reverse=True,
+        )
+        if pending_reviews:
+            selected_id, selected_document = pending_reviews[0]
+            st.session_state.current_doc_id = selected_id
+            st.session_state.last_result = selected_document.get("result")
+            st.session_state.confirmed_fields = selected_document.get(
+                "confirmed_fields", {}
+            )
+
     # Un dossier finalisé reste entièrement consultable depuis « Mes documents ».
     # L'étape 6 sert uniquement à afficher toutes les coches dans ce cas.
     render_credit_journey(6 if dossier_complete else journey_step)
     st.divider()
     
-    with st.expander("Voir et modifier mes documents", expanded=dossier_complete):
+    with st.expander(
+        "Mes justificatifs — revoir ou corriger",
+        expanded=bool(client_docs),
+    ):
         if client_docs:
 
             # Afficher les documents dans une grille
@@ -1547,14 +1582,22 @@ elif st.session_state.page == "Extraction":
 
                     # Couleur selon le statut
                     status_color = {
-                        'completed': '✅',
+                        'completed': (
+                            '✅'
+                            if doc_data.get('journey_reviewed') is True
+                            else '🟠'
+                        ),
                         'processing': '⏳',
                         'error': '❌',
                         'inconnu': '⏸️'
                     }.get(status, '⏸️')
 
                     status_text = {
-                        'completed': 'Traité',
+                        'completed': (
+                            'Validé'
+                            if doc_data.get('journey_reviewed') is True
+                            else 'À vérifier'
+                        ),
                         'processing': 'En cours...',
                         'error': 'Erreur',
                         'inconnu': 'En attente'
@@ -1564,7 +1607,8 @@ elif st.session_state.page == "Extraction":
                         col_btn, col_status = st.columns([3, 1])
                         with col_btn:
                             if st.button(
-                                f"📄 {doc_data.get('filename', 'Document')[:30]}...",
+                                f"Revoir — {doc_data.get('filename', 'Document')[:24]}",
+                                icon=":material/edit_document:",
                                 key=f"view_{doc_id}",
                                 width="stretch",
                             ):
@@ -1838,16 +1882,19 @@ elif st.session_state.page == "Extraction":
             # Mettre à jour les données du document
             st.session_state.documents[doc_id]["result"] = result
             st.session_state.documents[doc_id]["status"] = "completed"
-            st.session_state.current_doc_id = None
-            st.session_state.last_result = None
+            # Conserver le document actif : au prochain rerun, l'écran de
+            # relecture s'affiche avant toute possibilité de passer au suivant.
+            st.session_state.current_doc_id = doc_id
+            st.session_state.last_result = result
             st.session_state.confirmed_fields = {}
             save_document(
                 st.session_state.current_client_id, doc_id,
                 st.session_state.documents[doc_id],
             )
             st.session_state.journey_notice = (
-                f"{document_step['title']} analysé et sauvegardé. Vous pouvez continuer "
-                "avec le justificatif suivant."
+                f"{document_step['title']} analysé. Vérifiez les informations "
+                "détectées, corrigez-les si nécessaire, puis cliquez sur "
+                "« Valider et continuer »."
             )
             if document_type == "compromis":
                 st.session_state.compromis_skipped = False
