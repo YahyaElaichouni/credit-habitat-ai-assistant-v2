@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, Tuple
+import unicodedata
+import calendar
+from collections import Counter
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 
 STATEMENT_TARGET_FIELDS = (
@@ -98,6 +101,267 @@ def _normalized_date(raw: str) -> Optional[str]:
         return datetime(year, month, day).strftime("%d/%m/%Y")
     except ValueError:
         return None
+
+
+def _fold(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def _ocr_lines(text: str) -> list[Dict[str, Any]]:
+    """Conserve les lignes, pages et citations originales de l'OCR."""
+    lines = []
+    page = 1
+    for match in re.finditer(r"[^\r\n]+", text):
+        raw = match.group(0).strip()
+        if not raw:
+            continue
+        marker = re.fullmatch(r"\[PAGE\s+(\d+)\]", raw, re.I)
+        if marker:
+            page = int(marker.group(1))
+            continue
+        lines.append({
+            "raw": raw,
+            "folded": _fold(raw),
+            "page": page,
+            "start": match.start(),
+        })
+    return lines
+
+
+def _line_field(value: Any, line: Dict[str, Any], confidence: float) -> Dict[str, Any]:
+    return {
+        "value": value,
+        "confidence": confidence,
+        "source": {
+            "page": line["page"],
+            "quote": " ".join(line["raw"].split()),
+        },
+    }
+
+
+_FULL_DATE_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*((?:19|20)?\d{2})(?!\d)"
+)
+_SHORT_DATE_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s*[./-]\s*(\d{1,2})(?!\s*[./-]\s*\d)"
+)
+_AMOUNT_RE = re.compile(
+    r"(?<!\d)(?:\d{1,3}(?:[ .\u00a0]\d{3})+|\d+)[,.]\d{2}(?!\d)"
+)
+
+
+def _date_value(day: int, month: int, year: int) -> Optional[date]:
+    if year < 100:
+        year += 2000 if year < 70 else 1900
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _statement_anchor(text: str) -> Tuple[Optional[int], Optional[int]]:
+    """Trouve une année fiable et, si possible, le mois du solde précédent."""
+    preferred = re.search(
+        r"(?i)(?:solde\s+(?:de\s+)?d[ée]part|ancien\s+solde|relev[ée].{0,30}?au)"
+        r".{0,50}?(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*((?:19|20)\d{2})",
+        text,
+        re.S,
+    )
+    if preferred:
+        return int(preferred.group(3)), int(preferred.group(2))
+    years = [int(match.group(3)) for match in _FULL_DATE_RE.finditer(text)]
+    return (Counter(years).most_common(1)[0][0], None) if years else (None, None)
+
+
+def _parse_statement_date(
+    raw: Any,
+    default_year: Optional[int],
+    anchor_month: Optional[int] = None,
+) -> Optional[date]:
+    value = str(raw or "")
+    full = _FULL_DATE_RE.search(value)
+    if full:
+        return _date_value(*(int(part) for part in full.groups()))
+    short = _SHORT_DATE_RE.search(value)
+    if not short or default_year is None:
+        return None
+    day, month = int(short.group(1)), int(short.group(2))
+    year = default_year
+    # Passage décembre -> janvier après un solde précédent daté du 31/12.
+    if anchor_month == 12 and month == 1:
+        year += 1
+    elif anchor_month == 1 and month == 12:
+        year -= 1
+    return _date_value(day, month, year)
+
+
+def _transaction_date_lines(
+    result: Dict[str, Any],
+    text: str,
+) -> list[Tuple[date, Dict[str, Any]]]:
+    """Dates prouvées des opérations, sans dépendre d'une banque précise."""
+    lines = _ocr_lines(text)
+    year, anchor_month = _statement_anchor(text)
+    candidates: list[Tuple[date, Dict[str, Any]]] = []
+
+    # Les transactions structurées du LLM sont utilisées seulement pour leur
+    # date ; la citation doit être retrouvée dans une ligne OCR.
+    for item in result.get("transactions") or []:
+        if not isinstance(item, dict):
+            continue
+        parsed = _parse_statement_date(item.get("date"), year, anchor_month)
+        quote = _fold(item.get("quote"))
+        if parsed is None or not quote:
+            continue
+        evidence = next((line for line in lines if quote in line["folded"]), None)
+        if evidence:
+            candidates.append((parsed, evidence))
+
+    # Secours OCR : une vraie ligne d'opération commence par une date, possède
+    # un libellé alphabétique et au moins un montant décimal. Les soldes et
+    # totaux sont exclus explicitement.
+    for line in lines:
+        folded = line["folded"]
+        if any(word in folded for word in (
+            "solde depart", "solde initial", "ancien solde", "nouveau solde",
+            "solde final", "total mouvement", "total des mouvements",
+        )):
+            continue
+        if not _AMOUNT_RE.search(line["raw"]) or not re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]{3}", line["raw"]):
+            continue
+        # Les OCR de tableaux accolent parfois date opération et date valeur :
+        # « 01/0901/09 ». La première date de la ligne reste la date opération.
+        start = re.match(r"\s*(\d{1,2}\s*[./-]\s*\d{1,2}(?:\s*[./-]\s*\d{2,4})?)", line["raw"])
+        if not start:
+            continue
+        parsed = _parse_statement_date(start.group(1), year, anchor_month)
+        if parsed:
+            candidates.append((parsed, line))
+
+    unique = {}
+    for parsed, line in candidates:
+        unique.setdefault((parsed, line["page"], line["raw"]), (parsed, line))
+    return list(unique.values())
+
+
+def _fill_generic_period(result: Dict[str, Any], text: str) -> None:
+    """Période explicite, puis couverture réelle des opérations en secours."""
+    lines = _ocr_lines(text)
+    for line in lines:
+        if not re.search(
+            r"(?:\bperiode\b|\breleve\s+du\b|^du\b|\bstatement\s+period\b|"
+            r"\bperiod\s+from\b|^from\b)",
+            line["folded"],
+        ):
+            continue
+        dates = [
+            _date_value(*(int(part) for part in match.groups()))
+            for match in _FULL_DATE_RE.finditer(line["raw"])
+        ]
+        dates = [value for value in dates if value is not None]
+        if len(dates) >= 2:
+            result["periode_debut"] = _line_field(dates[0].strftime("%d/%m/%Y"), line, 0.95)
+            result["periode_fin"] = _line_field(dates[1].strftime("%d/%m/%Y"), line, 0.95)
+            return
+
+    if not _missing(result, "periode_debut") and not _missing(result, "periode_fin"):
+        return
+    dated_lines = _transaction_date_lines(result, text)
+
+    # Secours pour les OCR qui séparent la date, le libellé et le montant en
+    # plusieurs lignes. Après l'en-tête des opérations, toute date JJ/MM est
+    # une candidate ; les lignes de solde restent exclues.
+    if len(dated_lines) < 2:
+        year, anchor_month = _statement_anchor(text)
+        lines = _ocr_lines(text)
+        table_started = False
+        relaxed = []
+        for line in lines:
+            folded = line["folded"]
+            if any(marker in folded for marker in ("operation", "reference", "debit", "credit")):
+                table_started = True
+            if not table_started or "solde" in folded or "total" in folded:
+                continue
+            match = _FULL_DATE_RE.search(line["raw"]) or _SHORT_DATE_RE.search(line["raw"])
+            if not match:
+                continue
+            parsed = _parse_statement_date(match.group(0), year, anchor_month)
+            if parsed:
+                relaxed.append((parsed, line))
+        if len(relaxed) >= 2:
+            dated_lines = relaxed
+
+    # Relevé mensuel partiel (par exemple image 0001/0004) : « Solde départ
+    # au 31/08 » suivi d'opérations de septembre prouve le début du mois mais
+    # pas la dernière page. On propose alors les bornes du mois à faible
+    # confiance, au lieu de laisser les champs vides ou de prendre le 12/09
+    # comme fausse date de clôture.
+    opening = re.search(
+        r"(?i)solde\s+(?:de\s+)?d[ée]part\s+au.{0,100}?"
+        r"(\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4})",
+        text,
+        re.S,
+    )
+    if opening:
+        opening_date = _parse_statement_date(opening.group(1), None)
+        if opening_date:
+            period_start = opening_date + timedelta(days=1)
+            following = [item for item in dated_lines if item[0] >= period_start]
+            if following and all(
+                item[0].year == period_start.year and item[0].month == period_start.month
+                for item in following
+            ):
+                evidence = next(
+                    (line for line in _ocr_lines(text) if _fold(opening.group(0)) in line["folded"]),
+                    None,
+                )
+                if evidence is None:
+                    evidence = {
+                        "raw": " ".join(opening.group(0).split()),
+                        "page": _page_at(text, opening.start()),
+                    }
+                month_end = calendar.monthrange(period_start.year, period_start.month)[1]
+                if _missing(result, "periode_debut"):
+                    result["periode_debut"] = _line_field(
+                        period_start.strftime("%d/%m/%Y"), evidence, 0.66
+                    )
+                if _missing(result, "periode_fin"):
+                    result["periode_fin"] = _line_field(
+                        period_start.replace(day=month_end).strftime("%d/%m/%Y"),
+                        evidence,
+                        0.58,
+                    )
+                return
+
+    if len(dated_lines) < 2:
+        return
+    first_date, first_line = min(dated_lines, key=lambda item: item[0])
+    last_date, last_line = max(dated_lines, key=lambda item: item[0])
+    # Il s'agit de la couverture observée, proposée sous le seuil de validation
+    # automatique. Le client conserve donc la décision finale.
+    if _missing(result, "periode_debut"):
+        result["periode_debut"] = _line_field(first_date.strftime("%d/%m/%Y"), first_line, 0.68)
+    if _missing(result, "periode_fin"):
+        result["periode_fin"] = _line_field(last_date.strftime("%d/%m/%Y"), last_line, 0.68)
+
+
+def _fill_generic_bank_name(result: Dict[str, Any], text: str) -> None:
+    """Lit un nom bancaire dans l'en-tête sans catalogue d'établissements."""
+    if not _missing(result, "banque"):
+        return
+    for line in _ocr_lines(text)[:20]:
+        raw = line["raw"]
+        match = re.search(
+            r"\b([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ0-9&.' -]{1,55}?\s+(?:BANK|BANQUE))\b",
+            raw,
+            re.I,
+        )
+        if match:
+            candidate = " ".join(match.group(1).split()).strip(" |-:")
+            result["banque"] = _line_field(candidate, line, 0.88)
+            return
 
 
 def _header_match(text: str, pattern: str) -> Optional[re.Match]:
@@ -210,10 +474,11 @@ def fill_missing_statement_fields(data: Dict[str, Any], ocr_text: str) -> Dict[s
             if normalized_initial_date:
                 initial_date = datetime.strptime(normalized_initial_date, "%d/%m/%Y")
                 # « ancien/précédent » désigne le solde de clôture de la
-                # veille ; un libellé « solde initial » peut déjà porter la
-                # première date de la période.
+                # veille. « Solde départ au » joue le même rôle sur plusieurs
+                # relevés : la période commence alors le lendemain.
                 is_previous_balance = bool(
                     re.search(r"ANCIEN|PR[ÉE]C[ÉE]DENT", initial_label, re.I)
+                    or re.search(r"D[ÉE]PART\s+AU", match.group(0), re.I)
                 )
                 first_day = (
                     initial_date + timedelta(days=1) if is_previous_balance else initial_date
@@ -266,7 +531,12 @@ def fill_missing_statement_fields(data: Dict[str, Any], ocr_text: str) -> Dict[s
 
     _fill_populaire_header(result, ocr_text)
     _fill_bank_name(result, ocr_text)
-    _fill_populaire_header(result, ocr_text)
+    _fill_generic_bank_name(result, ocr_text)
+
+    # Les libellés explicites restent prioritaires. Si le relevé n'affiche
+    # aucune plage, on propose la couverture réellement observée dans les
+    # opérations, avec une confiance imposant la validation humaine.
+    _fill_generic_period(result, ocr_text)
 
     return {
         key: value
