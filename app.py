@@ -1933,11 +1933,8 @@ def render_header():
         <header class="cam-site-header">
             <div class="cam-utility-bar">
                 <span class="cam-corporate">Groupe Crédit Agricole du Maroc</span>
-                <div class="cam-utility-actions">
-                    <span class="cam-universe">UNIVERS CAM</span>
-                    <span class="cam-secure">&#128274; PARCOURS SÉCURISÉ</span>
-                </div>
-            </div>
+                
+            
         </header>
         """,
         unsafe_allow_html=True,

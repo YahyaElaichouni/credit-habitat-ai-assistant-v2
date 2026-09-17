@@ -154,6 +154,433 @@ def _signed_amount(raw: str) -> Optional[float]:
     return -value if negative else value
 
 
+# ---------------------------------------------------------------------------
+# Extraction générique par libellés
+# ---------------------------------------------------------------------------
+#
+# Les anciennes règles plus bas restent utiles pour des OCR très dégradés,
+# mais elles décrivent nécessairement quelques mises en page connues. Cette
+# couche ne dépend d'aucune entreprise : elle travaille ligne par ligne avec
+# un petit vocabulaire métier français/anglais, les séparateurs de cellules
+# produits par l'OCR et la proximité entre un libellé et sa valeur.
+
+_GENERIC_LABELS = {
+    "date_embauche": (
+        "date d embauche", "date embauche", "date d entree", "date entree",
+        "date de recrutement", "debut de contrat", "date d engagement",
+        "hire date", "employment date", "start date", "date joined",
+    ),
+    "periode": (
+        "periode de paie", "periode du", "periode", "pay period",
+        "payroll period", "payment period",
+    ),
+    "salaire_net": (
+        "net a payer avant impot", "net a payer", "salaire net", "net paye",
+        "net du mois", "net mensuel", "net payment", "net pay",
+        "net salary", "take home pay", "amount payable",
+    ),
+    "poste": (
+        "emploi occupe", "intitule du poste", "job title", "occupation",
+        "position", "fonction", "emploi", "poste",
+    ),
+    "employeur": (
+        "raison sociale", "nom de l employeur", "employer name", "employeur",
+        "entreprise", "societe", "company",
+    ),
+    "identite": (
+        "nom et prenom", "nom prenom", "nom complet", "employee name",
+        "nom du salarie", "salarie",
+    ),
+}
+
+# Libellés fréquemment voisins dans les tableaux. Ils ne constituent jamais
+# la valeur d'un autre champ : « Fonction | Situation familiale » est une
+# ligne d'en-tête, pas un poste nommé « Situation familiale ».
+_TABLE_HEADER_LABELS = tuple(
+    label for group in _GENERIC_LABELS.values() for label in group
+) + (
+    "situation familiale", "statut familial", "marital status",
+    "departement", "service", "qualification", "matricule", "employee id",
+    "numero cin", "cin", "date de naissance", "date naissance", "birth date",
+    "type salaire", "salaire mensuel", "coefficient", "affectation", "statut",
+)
+
+_MONTH_NUMBERS = {
+    "janvier": 1, "january": 1,
+    "fevrier": 2, "february": 2,
+    "mars": 3, "march": 3,
+    "avril": 4, "april": 4,
+    "mai": 5, "may": 5,
+    "juin": 6, "june": 6,
+    "juillet": 7, "july": 7,
+    "aout": 8, "august": 8,
+    "septembre": 9, "september": 9,
+    "octobre": 10, "october": 10,
+    "novembre": 11, "november": 11,
+    "decembre": 12, "december": 12,
+}
+
+_NUMERIC_DATE_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*((?:19|20)?\d{2})(?!\d)"
+)
+_SPACED_DATE_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s+(\d{1,2})\s+((?:19|20)\d{2})(?!\d)"
+)
+_TEXT_DATE_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s+"
+    r"(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[ûu]t|septembre|"
+    r"octobre|novembre|d[ée]cembre|january|february|march|april|may|june|"
+    r"july|august|september|october|november|december)\s+((?:19|20)\d{2})",
+    re.I,
+)
+_GENERIC_AMOUNT_RE = re.compile(
+    r"(?<![\d/.-])-?\s*(?:\d{1,3}(?:[ \u00a0.]\d{3})+|\d+)"
+    r"(?:[,.]\d{2})(?!\d)"
+)
+
+
+def _fold_for_matching(value: Any) -> str:
+    """Normalise seulement pour comparer ; la citation OCR reste inchangée."""
+    folded = _plain(str(value or "")).casefold().replace("’", "'")
+    folded = re.sub(r"[^a-z0-9|]+", " ", folded)
+    return re.sub(r"\s+", " ", folded).strip()
+
+
+def _contains_label(text: str, labels: Iterable[str]) -> bool:
+    folded = _fold_for_matching(text)
+    compact = re.sub(r"\s+", "", folded)
+    return any(
+        _fold_for_matching(label) in folded
+        or re.sub(r"\s+", "", _fold_for_matching(label)) in compact
+        for label in labels
+    )
+
+
+def _ocr_lines(ocr_text: str) -> list[Dict[str, Any]]:
+    """Retourne les lignes OCR avec leur page et leur position d'origine."""
+    lines = []
+    page = 1
+    for match in re.finditer(r"[^\r\n]+", ocr_text):
+        raw = match.group(0).strip()
+        if not raw:
+            continue
+        marker = re.fullmatch(r"\[PAGE\s+(\d+)\]", raw, re.I)
+        if marker:
+            page = int(marker.group(1))
+            continue
+        lines.append({
+            "raw": raw,
+            "folded": _fold_for_matching(raw),
+            "start": match.start(),
+            "end": match.end(),
+            "page": page,
+        })
+    return lines
+
+
+def _line_field(
+    value: Any,
+    line: Dict[str, Any],
+    confidence: float,
+) -> Dict[str, Any]:
+    return {
+        "value": value,
+        "confidence": confidence,
+        "source": {
+            "page": line["page"],
+            "quote": " ".join(line["raw"].split()),
+        },
+    }
+
+
+def _normalise_date_match(match: re.Match) -> Optional[str]:
+    try:
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year = int(match.group(3))
+        if year < 100:
+            year += 2000 if year < 50 else 1900
+        parsed = date(year, month, day)
+    except (TypeError, ValueError):
+        return None
+    return parsed.strftime("%d/%m/%Y")
+
+
+def _normalise_text_date_match(match: re.Match) -> Optional[str]:
+    month_name = _fold_for_matching(match.group(2))
+    month = _MONTH_NUMBERS.get(month_name)
+    if month is None:
+        return None
+    try:
+        parsed = date(int(match.group(3)), month, int(match.group(1)))
+    except ValueError:
+        return None
+    return parsed.strftime("%d/%m/%Y")
+
+
+def _dates_on_line(raw: str) -> list[str]:
+    values = []
+    for match in _NUMERIC_DATE_RE.finditer(raw):
+        value = _normalise_date_match(match)
+        if value:
+            values.append(value)
+    for match in _TEXT_DATE_RE.finditer(raw):
+        value = _normalise_text_date_match(match)
+        if value:
+            values.append(value)
+    for match in _SPACED_DATE_RE.finditer(raw):
+        value = _normalise_date_match(match)
+        if value:
+            values.append(value)
+    return values
+
+
+def _amounts_on_line(raw: str) -> list[float]:
+    values = []
+    for match in _GENERIC_AMOUNT_RE.finditer(raw):
+        value = _amount(match.group(0))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _clean_label_value(value: str) -> str:
+    value = value.strip(" |:-\t")
+    # Une nouvelle cellule libellée marque la fin de la valeur courante.
+    value = re.split(
+        r"\s*\|\s*(?=(?:[A-Za-zÀ-ÖØ-öø-ÿ][^|:]{1,30})\s*:)",
+        value,
+        maxsplit=1,
+    )[0]
+    return " ".join(value.strip(" |:-").split())
+
+
+def _value_after_label(raw: str, labels: Iterable[str]) -> Optional[str]:
+    """Lit une valeur dans la même cellule ou dans la cellule suivante."""
+    cells = [cell.strip() for cell in raw.split("|")]
+    for index, cell in enumerate(cells):
+        if not _contains_label(cell, labels):
+            continue
+        folded = _fold_for_matching(cell)
+        selected = max(
+            (label for label in labels if _fold_for_matching(label) in folded),
+            key=len,
+            default=None,
+        )
+        if selected:
+            # Les libellés utilisés ici sont sans caractères regex spéciaux ;
+            # les espaces/apostrophes OCR sont néanmoins rendus tolérants.
+            words = _fold_for_matching(selected).split()
+            pattern = r"\W*".join(re.escape(word) for word in words)
+            match = re.search(pattern, _plain(cell), re.I)
+            if match:
+                candidate = _clean_label_value(cell[match.end():])
+                if candidate:
+                    return candidate
+        if index + 1 < len(cells):
+            candidate = _clean_label_value(cells[index + 1])
+            if candidate and not _contains_label(candidate, _TABLE_HEADER_LABELS):
+                return candidate
+    return None
+
+
+def _next_row_cell_value(
+    lines: list[Dict[str, Any]],
+    index: int,
+    labels: Iterable[str],
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Gère les tableaux où les libellés sont au-dessus des valeurs."""
+    header_cells = [cell.strip() for cell in lines[index]["raw"].split("|")]
+    label_index = next(
+        (i for i, cell in enumerate(header_cells) if _contains_label(cell, labels)),
+        None,
+    )
+    if label_index is None:
+        return None
+    for candidate_line in lines[index + 1:index + 4]:
+        cells = [cell.strip() for cell in candidate_line["raw"].split("|")]
+        if label_index < len(cells):
+            candidate = _clean_label_value(cells[label_index])
+            if candidate and not _contains_label(candidate, _TABLE_HEADER_LABELS):
+                return candidate, candidate_line
+    return None
+
+
+def _generic_identity(result: Dict[str, Any], lines: list[Dict[str, Any]]) -> None:
+    """Réconcilie l'identité sans liste de prénoms ni connaissance d'entreprise."""
+    identity_line = None
+    identity = None
+    title_pattern = re.compile(
+        r"(?:^|\|)\s*(?:M(?:me|lle)?|Mr|Monsieur|Madame)\.?\s*"
+        r"(?:\|\s*)?([A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ' -]{3,90})",
+    )
+    for line in lines[:max(12, len(lines) // 2)]:
+        match = title_pattern.search(line["raw"])
+        if match:
+            candidate = re.split(r"\s*\||\s+\d{1,4}\s+(?:RUE|AVENUE|BD|LOT)\b", match.group(1))[0]
+            candidate = " ".join(candidate.strip().split())
+            words = candidate.split()
+            if 2 <= len(words) <= 5:
+                identity_line, identity = line, candidate
+                break
+
+    current_nom = str(_value(result, "nom") or "").strip()
+    current_prenom = str(_value(result, "prenom") or "").strip()
+
+    # Cas courant d'un LLM qui renvoie « VALENTE BENJAMIN » comme nom puis
+    # « Benjamin » comme prénom. On retire seulement le suffixe déjà prouvé.
+    if current_nom and current_prenom:
+        nom_words = current_nom.split()
+        prenom_words = current_prenom.split()
+        if (
+            len(nom_words) > len(prenom_words)
+            and [word.casefold() for word in nom_words[-len(prenom_words):]]
+            == [word.casefold() for word in prenom_words]
+        ):
+            surname = " ".join(nom_words[:-len(prenom_words)])
+            evidence = identity_line
+            if evidence is None:
+                source = result.get("nom", {}).get("source") if isinstance(result.get("nom"), dict) else None
+                if isinstance(source, dict) and source.get("quote"):
+                    evidence = {
+                        "raw": source["quote"], "page": source.get("page") or 1,
+                    }
+            if surname and evidence:
+                result["nom"] = _line_field(surname.upper(), evidence, 0.88)
+            return
+
+    if not identity or not identity_line:
+        return
+    words = identity.split()
+    if current_prenom:
+        given_words = current_prenom.split()
+        if [word.casefold() for word in words[-len(given_words):]] == [
+            word.casefold() for word in given_words
+        ]:
+            surname = " ".join(words[:-len(given_words)])
+            if surname:
+                result["nom"] = _line_field(surname.upper(), identity_line, 0.86)
+            return
+    if _missing(result, "nom") and _missing(result, "prenom") and len(words) >= 2:
+        # Ordre le plus répandu sur les bulletins francophones : NOM Prénom.
+        # La confiance reste sous le seuil automatique pour imposer la revue.
+        result["nom"] = _line_field(words[0].upper(), identity_line, 0.68)
+        result["prenom"] = _line_field(" ".join(words[1:]).title(), identity_line, 0.68)
+
+
+def _apply_generic_payroll_extraction(
+    result: Dict[str, Any],
+    ocr_text: str,
+) -> None:
+    """Applique les preuves génériques fortes après les secours historiques."""
+    lines = _ocr_lines(ocr_text)
+    if not lines:
+        return
+
+    for index, line in enumerate(lines):
+        raw = line["raw"]
+
+        if _contains_label(raw, _GENERIC_LABELS["date_embauche"]):
+            dates = _dates_on_line(raw)
+            evidence = line
+            if not dates:
+                below = _next_row_cell_value(lines, index, _GENERIC_LABELS["date_embauche"])
+                if below:
+                    dates = _dates_on_line(below[0])
+                    evidence = below[1]
+            if dates and _valid_employment_date(dates[0]):
+                result["date_embauche"] = _line_field(dates[0], evidence, 0.91)
+
+        if _contains_label(raw, _GENERIC_LABELS["periode"]):
+            dates = _dates_on_line(raw)
+            period_evidence = line
+            period_text = raw
+            if not dates:
+                below = _next_row_cell_value(lines, index, _GENERIC_LABELS["periode"])
+                if below:
+                    period_text, period_evidence = below
+                    dates = _dates_on_line(period_text)
+            if len(dates) >= 2:
+                result["periode"] = _line_field(
+                    f"{dates[0]} au {dates[1]}", period_evidence, 0.92
+                )
+            elif len(dates) == 1:
+                parsed = datetime.strptime(dates[0], "%d/%m/%Y")
+                result["periode"] = _line_field(
+                    parsed.strftime("%m/%Y"), period_evidence, 0.84
+                )
+            else:
+                month_year = re.search(
+                    r"(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[ûu]t|"
+                    r"septembre|octobre|novembre|d[ée]cembre|january|february|"
+                    r"march|april|may|june|july|august|september|october|"
+                    r"november|december)\s+((?:19|20)\d{2})",
+                    period_text,
+                    re.I,
+                )
+                if month_year:
+                    month = _MONTH_NUMBERS[_fold_for_matching(month_year.group(1))]
+                    result["periode"] = _line_field(
+                        f"{month:02d}/{month_year.group(2)}", period_evidence, 0.88
+                    )
+
+        if _contains_label(raw, _GENERIC_LABELS["salaire_net"]):
+            # Écarter les lignes de net imposable/cumul qui ne sont pas le net payé.
+            folded = _fold_for_matching(raw)
+            if "net imposable" not in folded and "cumul" not in folded:
+                amounts = _amounts_on_line(raw)
+                net_evidence = line
+                if not amounts:
+                    below = _next_row_cell_value(lines, index, _GENERIC_LABELS["salaire_net"])
+                    if below:
+                        amounts = _amounts_on_line(below[0])
+                        net_evidence = below[1]
+                if amounts:
+                    plausible = [amount for amount in amounts if 0 < amount < 10_000_000]
+                    if plausible:
+                        result["salaire_net"] = _line_field(plausible[-1], net_evidence, 0.93)
+
+        if _contains_label(raw, _GENERIC_LABELS["poste"]):
+            candidate = _value_after_label(raw, _GENERIC_LABELS["poste"])
+            evidence = line
+            if not candidate:
+                below = _next_row_cell_value(lines, index, _GENERIC_LABELS["poste"])
+                if below:
+                    candidate, evidence = below
+            if candidate and re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]{2}", candidate):
+                # Ne pas prendre un autre libellé de colonne comme valeur.
+                if not _contains_label(candidate, ("departement", "service", "qualification")):
+                    result["poste"] = _line_field(candidate[:100], evidence, 0.84)
+
+        if _missing(result, "employeur") and _contains_label(raw, _GENERIC_LABELS["employeur"]):
+            candidate = _value_after_label(raw, _GENERIC_LABELS["employeur"])
+            evidence = line
+            if not candidate:
+                below = _next_row_cell_value(lines, index, _GENERIC_LABELS["employeur"])
+                if below:
+                    candidate, evidence = below
+            if candidate and re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]{2}", candidate):
+                result["employeur"] = _line_field(candidate[:120], evidence, 0.86)
+
+    # Raison sociale non libellée dans l'en-tête : on se limite aux premières
+    # lignes et exige une forme juridique explicite, sans marque codée en dur.
+    legal_form = re.compile(
+        r"\b(?:SA|SAS|SARL|SASU|EURL|SPA|LLC|LTD|LIMITED|INC|GMBH)\b",
+        re.I,
+    )
+    for line in lines[:15]:
+        if legal_form.search(line["raw"]) and not re.search(
+            r"\b(?:SIRET|RCS|CAPITAL|MATRICULE)\b", line["raw"], re.I
+        ):
+            candidate = _clean_label_value(line["raw"].split("|", 1)[0])
+            current = str(_value(result, "employeur") or "")
+            if _missing(result, "employeur") or _fold_for_matching(current) in _fold_for_matching(candidate):
+                result["employeur"] = _line_field(candidate[:120], line, 0.88)
+            break
+
+    _generic_identity(result, lines)
+
+
 def _search(text: str, pattern: str, flags: int = re.I) -> Optional[re.Match]:
     return re.search(pattern, text, flags)
 
@@ -783,14 +1210,9 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
             r"\s+([^|]{2,60}?)\s*\|",
         )
         _put_match(result, "poste", text, function_row)
-    if _missing(result, "poste"):
-        function_with_family = _search(
-            text,
-            r"Fonction\s*\|\s*Situation\s+familiale.*?"
-            r"N[°º].{0,15}?C.{0,3}?I.{0,3}?N.{0,3}?\s+"
-            r"([^|]{2,60}?)\s*\|",
-        )
-        _put_match(result, "poste", text, function_with_family)
+    # Ne pas déduire le poste depuis l'en-tête
+    # « Fonction | Situation familiale | ... ». La valeur est recherchée par
+    # la couche générique dans la même colonne de la ligne suivante.
     if _missing(result, "poste"):
         dated_function_row = _search(
             text,
@@ -942,6 +1364,11 @@ def fill_missing_payroll_fields(data: Dict[str, Any], ocr_text: str) -> Dict[str
             result["devise"] = _field("EUR", text, france, confidence=0.76)
         elif morocco:
             result["devise"] = _field("MAD", text, morocco, confidence=0.72)
+
+    # Dernière passe indépendante de la mise en page et de l'entreprise.
+    # Les associations explicites libellé/valeur prennent le dessus sur une
+    # hypothèse LLM ou une règle historique moins générale.
+    _apply_generic_payroll_extraction(result, ocr_text)
 
     return {
         key: value
