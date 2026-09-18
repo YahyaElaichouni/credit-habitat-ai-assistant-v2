@@ -126,6 +126,7 @@ def render_document_review(
     advisor_id,
     session_id,
     confirmations,
+    submit_label="Valider et continuer",
 ):
     """Afficher le document et les informations modifiables côte à côte."""
     fields = result["validation_result"]["fields"]
@@ -248,7 +249,7 @@ def render_document_review(
                         render_field(name)
 
             submitted = st.form_submit_button(
-                "Valider et continuer",
+                submit_label,
                 type="primary",
                 width="stretch",
             )

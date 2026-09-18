@@ -20,6 +20,9 @@ SESSION_DEFAULTS = {
     "account_created": False,
     "customer_profile": {},
     "compromis_skipped": False,
+    "additional_statement_mode": False,
+    "editing_home_project": False,
+    "continue_after_project": False,
     "advisor_authenticated": False,
     "advisor_username": None,
 }

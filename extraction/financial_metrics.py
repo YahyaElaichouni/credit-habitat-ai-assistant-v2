@@ -3,7 +3,7 @@ import re
 import statistics
 import unicodedata
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 CREDIT_CHARGE_PATTERN = (
@@ -22,15 +22,17 @@ EXCLUDED_WORDS = ("assurance", "remboursement anticipe", "solde du pret")
 # et les commissions de virement.
 INCOMING_OPERATION_PATTERN = (
     r"\b(?:vir(?:ement)?|virt)\s*(?:-\s*)?(?:inst(?:antane)?)?\s+"
-    r"(?:recu|de)\b"
+    r"(?:recu|de|en\s+votre\s+faveur)\b"
     r"|\brecept(?:ion)?\b.{0,24}\bvir(?:ement)?\b"
-    r"|\b(?:vers(?:ement|t)?|depot|remise|allocation|pension|loyer|prime|"
-    r"distribution|dividende|benefice)\w*\b"
+    r"|\breglement\s+credit\s+carte\b"
+    r"|\b(?:vers(?:ement|t)?|depot|remise|encaissement|recette|allocation|"
+    r"pension|loyer|prime|distribution|dividende|benefice)\w*\b"
     r"|\binteret\s+crediteur\b"
 )
 EXTRA_INCOME_EXCLUDED = (
     "salaire", "paie", "remboursement", "annulation", "contrepassation",
-    "solde initial", "ancien solde", "nouveau solde", "total mouvement",
+    "solde initial", "solde depart", "solde precedent", "solde au",
+    "ancien solde", "nouveau solde", "total mouvement",
     "virement emis", "commission", "retrait", "frais", "paiement",
 )
 
@@ -56,7 +58,9 @@ def _norm(value):
 
 def _date(value, default_year=None):
     raw = re.sub(r"\s+", " ", str(value or "")).strip()
-    short = re.fullmatch(r"(\d{1,2})[./-](\d{1,2})", raw)
+    short = re.fullmatch(
+        r"(\d{1,2})(?:\s*[./-]\s*|\s+)(\d{1,2})", raw
+    )
     if short and default_year:
         raw = f"{short.group(1)}/{short.group(2)}/{default_year}"
     spaced = re.fullmatch(r"(\d{1,2})\s+(\d{1,2})\s+(\d{2,4})", raw)
@@ -94,42 +98,77 @@ def _statement_year(pages):
     if anchor:
         raw_year = int(anchor.group(1))
         return raw_year + 2000 if raw_year < 100 else raw_year
-    years = re.findall(r"(?<!\d)\d{1,2}[./-]\d{1,2}[./-](\d{4})(?!\d)", text)
+    years = re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)
     if not years:
         return None
     raw_year = int(statistics.mode(years))
     return raw_year + 2000 if raw_year < 100 else raw_year
 
 
+def _statement_anchor_dates(pages):
+    """Dates complètes réellement visibles, utilisées pour dater JJ/MM."""
+    text = " ".join(str(item.get("text") or "") for item in pages or [])
+    pattern = re.compile(
+        r"(?<!\d)\d{1,2}(?:\s*[./-]\s*|\s+)\d{1,2}"
+        r"(?:\s*[./-]\s*|\s+)\d{2,4}(?!\d)"
+    )
+    anchors = []
+    for match in pattern.finditer(text):
+        parsed = _date(match.group(0))
+        if parsed is not None:
+            anchors.append(parsed)
+    return anchors
+
+
+def _transaction_date(value, pages):
+    """Interprète une date d'opération, y compris au changement d'année."""
+    parsed = _date(value)
+    if parsed is not None:
+        return parsed
+    raw = re.sub(r"\s+", " ", str(value or "")).strip()
+    short = re.fullmatch(
+        r"(\d{1,2})(?:\s*[./-]\s*|\s+)(\d{1,2})", raw
+    )
+    if not short:
+        return None
+    day, month = (int(part) for part in short.groups())
+    anchors = _statement_anchor_dates(pages)
+    years = {anchor.year for anchor in anchors}
+    if not years:
+        fallback = _statement_year(pages)
+        years = {fallback} if fallback else set()
+    candidates = []
+    for year in years:
+        try:
+            candidate = datetime(year, month, day).date()
+        except ValueError:
+            continue
+        distance = min(
+            (abs((candidate - anchor).days) for anchor in anchors),
+            default=0,
+        )
+        candidates.append((distance, candidate))
+    return min(candidates, key=lambda item: item[0])[1] if candidates else None
+
+
 def _statement_month(pages):
-    """Mois attendu, déduit d'une période ou du solde de départ précédent."""
+    """Mois unique attendu uniquement si la période explicite le prouve."""
     text = " ".join(str(item.get("text") or "") for item in pages or [])
     period = re.search(
-        r"(?i)(?:relev[ée]\s+)?du\s+(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})"
-        r"\s+au\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}",
+        r"(?i)(?:relev[ée]\s+)?du\s+"
+        r"(\d{1,2}(?:\s*[./-]\s*|\s+)\d{1,2}(?:\s*[./-]\s*|\s+)\d{2,4})"
+        r"\s+au\s+"
+        r"(\d{1,2}(?:\s*[./-]\s*|\s+)\d{1,2}(?:\s*[./-]\s*|\s+)\d{2,4})",
         text,
     )
     if period:
-        year = int(period.group(3))
-        if year < 100:
-            year += 2000
-        return f"{year:04d}-{int(period.group(2)):02d}"
-
-    opening = re.search(
-        r"(?i)(?:solde\s+(?:de\s+)?d[ée]part|ancien\s+solde)"
-        r".{0,80}?(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})",
-        text,
-    )
-    if not opening:
-        return None
-    day, month, year = (int(part) for part in opening.groups())
-    if year < 100:
-        year += 2000
-    try:
-        following_day = datetime(year, month, day).date() + timedelta(days=1)
-    except ValueError:
-        return None
-    return following_day.strftime("%Y-%m")
+        start, end = _date(period.group(1)), _date(period.group(2))
+        if start and end and (start.year, start.month) == (end.year, end.month):
+            return start.strftime("%Y-%m")
+    # Un solde de départ au dernier jour du mois ne garantit pas que toutes
+    # les opérations appartiennent au mois suivant : certains relevés couvrent
+    # quelques jours de part et d'autre du changement d'année.
+    return None
 
 
 def _amount(value):
@@ -171,7 +210,7 @@ def _transaction_evidence(item, pages):
     if isinstance(quote, str) and _norm(quote) and _norm(quote) in page_text:
         return quote.strip()
 
-    day = _date(item.get("date"), _statement_year(pages))
+    day = _transaction_date(item.get("date"), pages)
     amount = _amount(item.get("montant"))
     description = _norm(item.get("description"))
     if day is None or amount is None or not description:
@@ -206,9 +245,18 @@ def _statement_activity_evidence(transactions, pages):
             return item.get("page"), quote
     for page_item in pages or []:
         raw = str(page_item.get("text") or "")
+        marked = re.search(
+            r"(?im)^.*\b(?:DEBIT|CREDIT)\s*:\s*"
+            r"(?:\d{1,3}(?:[ .\u00a0]\d{3})+|\d+)[,.]\d{2}.*$",
+            raw,
+        )
+        if marked and type(page_item.get("page")) is int:
+            return page_item["page"], " ".join(marked.group(0).split())
         match = re.search(
-            r"(?i)(date.{0,140}(?:libell[ée]|nature\s+op[ée]ration|r[ée]f[ée]rence)"
-            r".{0,140}d[ée]bit.{0,80}cr[ée]dit)",
+            r"(?i)(date.{0,180}(?:libell[ée]|nature\s+op[ée]ration|"
+            r"op[ée]ration[- ]?r[ée]f[ée]rence|r[ée]f[ée]rence)"
+            r".{0,180}(?:montant\s+)?d[ée]bit.{0,120}"
+            r"(?:montant\s+)?cr[ée]dit)",
             raw,
             re.S,
         )
@@ -299,7 +347,7 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
             continue
         page_text = _norm(" ".join(str(page_item.get("text") or "").split()))
         for match in pattern.finditer(page_text):
-            day = _date(match.group("date"), _statement_year(pages))
+            day = _transaction_date(match.group("date"), pages)
             amount = _amount(match.group("amount"))
             if not valid_day(day) or amount is None or amount <= 0:
                 continue
@@ -332,7 +380,7 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
             amounts = list(flexible_amount.finditer(line))
             if not date_match or not amounts:
                 continue
-            day = _date(date_match.group("date"), _statement_year(pages))
+            day = _transaction_date(date_match.group("date"), pages)
             amount = _amount(amounts[-1].group(0))
             if not valid_day(day) or amount is None or amount <= 0:
                 continue
@@ -377,7 +425,7 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
                 continue
             raw_date = nearest_date.group(0)
             raw_amount = amount_match.group(0)
-            day = _date(raw_date, _statement_year(pages))
+            day = _transaction_date(raw_date, pages)
             amount = _amount(raw_amount)
             description = suffix[:amount_match.start()].strip(" |-:")
             if not valid_day(day) or amount is None or amount <= 0:
@@ -428,6 +476,63 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
     return [item for item, _, _ in unique]
 
 
+def _column_marked_transactions(pages, transaction_type):
+    """Lit les lignes dont la colonne Débit/Crédit a été conservée par l'OCR.
+
+    Les marqueurs sont produits à partir de la position horizontale des
+    montants par ``lines_to_layout_text``. Ils rendent le calcul indépendant
+    du libellé de la banque et évitent de deviner le sens d'une opération.
+    """
+    marker = "credit" if transaction_type == "credit" else "debit"
+    marker_pattern = re.compile(
+        rf"\b{marker}\s*:\s*(?P<amount>"
+        r"(?:\d{1,3}(?:[ .\u00a0]\d{3})+|\d+)[,.]\d{2})\b",
+        re.I,
+    )
+    date_pattern = re.compile(
+        r"(?<!\d)(\d{1,2}(?:\s*[./-]\s*|\s+)\d{1,2}"
+        r"(?:(?:\s*[./-]\s*|\s+)\d{2,4})?)(?!\d)"
+    )
+    expected_month = _statement_month(pages)
+    found = []
+    for page_item in pages or []:
+        page_number = page_item.get("page")
+        if type(page_number) is not int:
+            continue
+        for raw_line in str(page_item.get("text") or "").splitlines():
+            amount_match = marker_pattern.search(raw_line)
+            dates = list(date_pattern.finditer(raw_line[:amount_match.start()])) if amount_match else []
+            if not amount_match or not dates:
+                continue
+            day = _transaction_date(dates[0].group(1), pages)
+            amount = _amount(amount_match.group("amount"))
+            if (
+                day is None
+                or amount is None
+                or amount <= 0
+                or (expected_month and day.strftime("%Y-%m") != expected_month)
+            ):
+                continue
+            description_start = dates[-1].end()
+            description = raw_line[description_start:amount_match.start()].strip(" |:-")
+            if not description:
+                continue
+            found.append({
+                "date": dates[0].group(1),
+                "description": description,
+                "montant": amount,
+                "type": transaction_type,
+                "page": page_number,
+                "quote": " ".join(raw_line.split()),
+                "month": day.strftime("%Y-%m"),
+            })
+
+    # Une ligne reconstruite n'est parcourue qu'une fois. Ne pas dédupliquer
+    # ici : deux opérations strictement identiques peuvent être deux mouvements
+    # bancaires réels et doivent toutes deux contribuer au total.
+    return found
+
+
 def _prefer_complete_evidence(model_transactions, ocr_transactions, metric_name):
     """Retient la série prouvée la plus complète pour un calcul mensuel.
 
@@ -457,7 +562,7 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
             continue
         description = _norm(item.get("description"))
         amount = _amount(item.get("montant"))
-        day = _date(item.get("date"), _statement_year(pages))
+        day = _transaction_date(item.get("date"), pages)
         transaction_type = _norm(item.get("type"))
         page = item.get("page")
         quote = _transaction_evidence(item, pages)
@@ -483,12 +588,26 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
             )
     # Le secours est systématique : une liste LLM partielle ne doit pas bloquer
     # la lecture des autres échéances explicitement présentes dans l'OCR.
+    marked_eligible = [
+        item for item in _column_marked_transactions(pages, "debit")
+        if re.search(CREDIT_CHARGE_PATTERN, _norm(item["description"]))
+        and not any(word in _norm(item["description"]) for word in EXCLUDED_WORDS)
+    ]
     ocr_eligible = [
         item for item in _ocr_keyword_transactions(pages, CREDIT_CHARGE_PATTERN, "debit")
-        if not any(word in _norm(item["description"]) for word in EXCLUDED_WORDS)
+        if re.search(CREDIT_CHARGE_PATTERN, _norm(item["description"]))
+        and not any(word in _norm(item["description"]) for word in EXCLUDED_WORDS)
     ]
-    eligible = _prefer_complete_evidence(
-        eligible, ocr_eligible, "Charges mensuelles de crédits"
+    # Les marqueurs de colonne proviennent de la géométrie du tableau et
+    # sont donc prioritaires. Le secours lexical aplati peut voir une même
+    # échéance deux fois en traversant la ligne d'en-tête.
+    ocr_eligible = marked_eligible or ocr_eligible
+    eligible = (
+        marked_eligible
+        if marked_eligible
+        else _prefer_complete_evidence(
+            eligible, ocr_eligible, "Charges mensuelles de crédits"
+        )
     )
     for item in ocr_eligible:
         logger.info(
@@ -536,7 +655,7 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
             continue
         description = _norm(item.get("description"))
         amount = _amount(item.get("montant"))
-        day = _date(item.get("date"), _statement_year(pages))
+        day = _transaction_date(item.get("date"), pages)
         transaction_type = _norm(item.get("type"))
         page = item.get("page")
         quote = _transaction_evidence(item, pages)
@@ -554,17 +673,30 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
                              "month": day.strftime("%Y-%m")})
     # Le secours est systématique : le modèle extrait fréquemment la première
     # occurrence d'un virement récurrent mais oublie les suivantes.
-    ocr_eligible = [
-        item for item in _ocr_keyword_transactions(
-            pages, INCOMING_OPERATION_PATTERN, "credit"
-        )
+    marked_eligible = [
+        item for item in _column_marked_transactions(pages, "credit")
         if not any(
             word in _norm(item["description"])
             for word in EXTRA_INCOME_EXCLUDED
         )
     ]
-    eligible = _prefer_complete_evidence(
-        eligible, ocr_eligible, "Revenus complémentaires"
+    ocr_eligible = [
+        item for item in _ocr_keyword_transactions(
+            pages, INCOMING_OPERATION_PATTERN, "credit"
+        )
+        if re.search(INCOMING_OPERATION_PATTERN, _norm(item["description"]))
+        and not any(
+            word in _norm(item["description"])
+            for word in EXTRA_INCOME_EXCLUDED
+        )
+    ]
+    ocr_eligible = marked_eligible or ocr_eligible
+    eligible = (
+        marked_eligible
+        if marked_eligible
+        else _prefer_complete_evidence(
+            eligible, ocr_eligible, "Revenus complémentaires"
+        )
     )
     if not eligible:
         return _zero_proposal(

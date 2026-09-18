@@ -11,7 +11,9 @@ adaptez la méthode `image_to_text()` en conséquence.
 """
 
 import logging
+import re
 import statistics
+import unicodedata
 
 import cv2
 from paddleocr import PaddleOCR
@@ -281,6 +283,8 @@ class OCREngine:
                 positioned.append({
                     "text": text,
                     "x": min(xs),
+                    "x_max": max(xs),
+                    "x_center": (min(xs) + max(xs)) / 2,
                     "y": (y_min + y_max) / 2,
                     "y_min": y_min,
                     "y_max": y_max,
@@ -329,10 +333,65 @@ class OCREngine:
             best_row["y_max"] = max(value["y_max"] for value in best_row["items"])
             best_row["height"] = statistics.median(value["height"] for value in best_row["items"])
 
-        rendered = [
-            " | ".join(value["text"] for value in sorted(row["items"], key=lambda value: value["x"]))
-            for row in sorted(rows, key=lambda value: value["center"])
-        ]
+        # Repérer les colonnes financières depuis l'en-tête, sans nom de
+        # banque ni coordonnées codées en dur. Le texte seul ne permet pas de
+        # distinguer un montant débit d'un montant crédit lorsque la cellule
+        # vide opposée disparaît. On conserve donc ici l'information
+        # géométrique avant de la perdre.
+        debit_center = None
+        credit_center = None
+        for row in rows:
+            row_debit = []
+            row_credit = []
+            for item in row["items"]:
+                normalized = unicodedata.normalize(
+                    "NFKD", str(item["text"] or "")
+                ).encode("ascii", "ignore").decode().casefold()
+                normalized = re.sub(r"[^a-z]+", " ", normalized).strip()
+                if re.search(r"\bdebit\b", normalized):
+                    row_debit.append(item["x_center"])
+                if re.search(r"\bcredit\b", normalized):
+                    row_credit.append(item["x_center"])
+
+            # Les deux intitulés doivent appartenir à la même ligne
+            # d'en-tête. Cette contrainte empêche de prendre, plus bas, les
+            # mots « intérêts débiteurs » ou « règlement crédit carte »
+            # pour les coordonnées des colonnes.
+            if row_debit and row_credit:
+                candidate_debit = statistics.median(row_debit)
+                candidate_credit = statistics.median(row_credit)
+                if candidate_debit < candidate_credit:
+                    debit_center = candidate_debit
+                    credit_center = candidate_credit
+                    break
+
+        financial_columns = (
+            debit_center is not None
+            and credit_center is not None
+            and debit_center < credit_center
+        )
+        if financial_columns:
+            gap = credit_center - debit_center
+            debit_left = debit_center - (gap * 0.65)
+            credit_left = (debit_center + credit_center) / 2
+
+        amount_pattern = re.compile(
+            r"^[+-]?\s*\d[\d .\u00a0]*[,.]\d{2}\s*(?:MAD|DH|DHS)?$",
+            re.I,
+        )
+
+        rendered = []
+        for row in sorted(rows, key=lambda value: value["center"]):
+            cells = []
+            for value in sorted(row["items"], key=lambda value: value["x"]):
+                cell = value["text"]
+                if financial_columns and amount_pattern.fullmatch(cell.strip()):
+                    if value["x_center"] >= credit_left:
+                        cell = f"CREDIT: {cell}"
+                    elif value["x_center"] >= debit_left:
+                        cell = f"DEBIT: {cell}"
+                cells.append(cell)
+            rendered.append(" | ".join(cells))
         rendered.extend(text for _, text in sorted(fallback))
         return "\n".join(rendered)
 

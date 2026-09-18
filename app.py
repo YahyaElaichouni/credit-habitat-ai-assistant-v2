@@ -183,6 +183,86 @@ def render_customer_access_dialog():
                         st.rerun()
 
 
+@st.dialog("Décrire mon projet", width="large")
+def render_housing_project_dialog(project=None):
+    """Saisir la première étape du parcours avant les justificatifs."""
+    project = project or {}
+    property_options = [
+        "Appartement",
+        "Maison",
+        "Terrain + construction",
+        "Autre",
+    ]
+    saved_type = project.get("property_type") or property_options[0]
+    saved_duration = int(project.get("duration_years") or 20)
+
+    st.caption(
+        "Ces informations seront enregistrées et reprises automatiquement "
+        "dans votre simulation."
+    )
+    with st.form("housing_project_profile", border=False):
+        left, right = st.columns(2)
+        property_type = left.selectbox(
+            "Type de bien *",
+            property_options,
+            index=(
+                property_options.index(saved_type)
+                if saved_type in property_options
+                else 0
+            ),
+        )
+        city = right.text_input(
+            "Ville du projet *",
+            value=project.get("city") or "",
+            placeholder="Ex. Rabat",
+        )
+        duration_years = st.slider(
+            "Durée souhaitée du crédit",
+            min_value=5,
+            max_value=30,
+            value=max(5, min(30, saved_duration)),
+            format="%d ans",
+            help="Cette durée sera utilisée pour calculer la mensualité.",
+        )
+        submitted = st.form_submit_button(
+            (
+                "Enregistrer et continuer"
+                if st.session_state.get("continue_after_project")
+                else "Enregistrer les modifications"
+            ),
+            type="primary",
+            width="stretch",
+        )
+
+    if st.button("Annuler", width="stretch", key="cancel_housing_project"):
+        st.session_state.editing_home_project = False
+        st.session_state.continue_after_project = False
+        st.rerun()
+
+    if not submitted:
+        return
+    if not city.strip():
+        st.error("Renseignez la ville du projet pour continuer.")
+        return
+
+    # Le prix vient ensuite du compromis et l'apport de la vérification.
+    # Lors d'une modification, conserver les montants déjà confirmés.
+    save_project(
+        st.session_state.current_client_id,
+        city.strip(),
+        property_type,
+        float(project.get("purchase_price") or 0),
+        float(project.get("contribution") or 0),
+        duration_years,
+    )
+    continue_after_save = st.session_state.get("continue_after_project", False)
+    st.session_state.editing_home_project = False
+    st.session_state.continue_after_project = False
+    st.session_state.page = "Extraction" if continue_after_save else "Accueil"
+    st.toast("Votre projet est enregistré.", icon=":material/check_circle:")
+    st.rerun()
+
+
 def render_header():
     """Afficher un en-tête inspiré de l'identité institutionnelle du GCAM."""
     page_labels = {
@@ -391,7 +471,8 @@ def render_header():
                     for key in (
                         "documents", "current_doc_id", "confirmed_fields", "last_result",
                         "chat_history", "credit_profile", "customer_profile",
-                        "compromis_skipped",
+                        "compromis_skipped", "additional_statement_mode",
+                        "editing_home_project", "continue_after_project",
                     ):
                         st.session_state.pop(key, None)
                     st.session_state.account_created = False
@@ -442,7 +523,7 @@ def render_cam_hero(eyebrow, title, text, badge):
         3,
     )
     journey_steps = (
-        ("Décrire le projet", "Type de bien, montant et apport"),
+        ("Décrire le projet", "Type de bien, ville et durée"),
         ("Ajouter les justificatifs", "Identité, revenus et relevé bancaire"),
         ("Vérifier les informations", "Correction et validation avant simulation"),
         ("Comparer les simulations", "Durées, mensualités et capacité d'emprunt"),
@@ -490,6 +571,7 @@ def render_cam_hero(eyebrow, title, text, badge):
             render_customer_access_dialog()
         elif not project_ready:
             st.session_state.editing_home_project = True
+            st.session_state.continue_after_project = True
             st.rerun()
         elif not documents_ready:
             _go_to("Extraction")
@@ -614,6 +696,33 @@ DOCUMENT_JOURNEY = (
         "optional": True,
     },
 )
+MAX_BANK_STATEMENTS = 3
+
+
+def _bank_statements(documents=None):
+    documents = documents if documents is not None else current_client_documents()
+    statements = [
+        (document_id, document)
+        for document_id, document in documents.items()
+        if document.get("type") == "releve"
+        and document.get("status") == "completed"
+        and document.get("result")
+    ]
+    return sorted(
+        statements,
+        key=lambda item: item[1].get("timestamp") or "",
+    )
+
+
+def _request_additional_statement():
+    statements = _bank_statements()
+    if len(statements) >= MAX_BANK_STATEMENTS:
+        return
+    st.session_state.additional_statement_mode = True
+    st.session_state.current_doc_id = None
+    st.session_state.last_result = None
+    st.session_state.confirmed_fields = {}
+    st.rerun()
 
 
 def completed_document_types(documents=None):
@@ -662,10 +771,11 @@ def credit_journey_step(documents=None):
     return 5 if information_ready and st.session_state.page == "Simulation" else 4
 
 
-def render_credit_journey(active_step):
-    """Afficher les six étapes du parcours dans un format court et lisible."""
+def render_credit_journey(active_step, documents=None):
+    """Afficher le parcours et ouvrir directement la pièce sélectionnée."""
+    documents = documents if documents is not None else current_client_documents()
     labels = (
-        "Identité",
+        "Carte d'identité",
         "Bulletin",
         "Relevé",
         "Compromis",
@@ -684,8 +794,83 @@ def render_credit_journey(active_step):
             icon = "○"
 
         with column:
-            st.markdown(f"**{icon} {index + 1}**")
-            st.caption(label)
+            if index < len(DOCUMENT_JOURNEY):
+                document_type = DOCUMENT_JOURNEY[index]["type"]
+                candidates = [
+                    (document_id, document)
+                    for document_id, document in documents.items()
+                    if document.get("type") == document_type
+                    and document.get("status") == "completed"
+                    and document.get("result")
+                ]
+                candidates.sort(
+                    key=lambda item: item[1].get("timestamp") or "",
+                    reverse=True,
+                )
+                selected = candidates[0] if candidates else None
+                if st.button(
+                    f"{icon} {index + 1}  {label}",
+                    key=f"journey_open_{document_type}",
+                    width="stretch",
+                    disabled=selected is None,
+                    help=(
+                        f"Ouvrir et vérifier : {selected[1].get('filename', 'Document')}"
+                        if selected
+                        else "Aucun document analysé pour cette étape"
+                    ),
+                ):
+                    document_id, document = selected
+                    st.session_state.current_doc_id = document_id
+                    st.session_state.last_result = document.get("result")
+                    st.session_state.confirmed_fields = document.get(
+                        "confirmed_fields", {}
+                    )
+                    st.rerun()
+                st.caption(
+                    "Cliquer pour revoir"
+                    if selected
+                    else "Document non ajouté"
+                )
+            else:
+                st.markdown(f"**{icon} {index + 1}**")
+                st.caption(label)
+
+
+def _next_journey_document(current_type, documents=None):
+    """Retourner le justificatif suivant disponible dans l'ordre du parcours."""
+    documents = documents if documents is not None else current_client_documents()
+    types = [step["type"] for step in DOCUMENT_JOURNEY]
+    try:
+        start = types.index(current_type) + 1
+    except ValueError:
+        return None
+    for document_type in types[start:]:
+        candidates = [
+            (document_id, document)
+            for document_id, document in documents.items()
+            if document.get("type") == document_type
+            and document.get("status") == "completed"
+            and document.get("result")
+        ]
+        if candidates:
+            return max(
+                candidates,
+                key=lambda item: item[1].get("timestamp") or "",
+            )
+    return None
+
+
+def _open_document_or_resume(next_document):
+    """Ouvrir une pièce existante ou reprendre l'étape normale du parcours."""
+    if next_document:
+        document_id, document = next_document
+        st.session_state.current_doc_id = document_id
+        st.session_state.last_result = document.get("result")
+        st.session_state.confirmed_fields = document.get("confirmed_fields", {})
+    else:
+        st.session_state.current_doc_id = None
+        st.session_state.last_result = None
+        st.session_state.confirmed_fields = {}
 
 
 def render_guided_document_review(document_id, document, journey_step, advisor_id):
@@ -694,23 +879,47 @@ def render_guided_document_review(document_id, document, journey_step, advisor_i
     control_result = result.get("control_result", {})
     already_reviewed = document.get("journey_reviewed") is True
 
-    title_col, close_col = st.columns([5, 1])
+    if document.get("type") == "releve":
+        statements = _bank_statements()
+        statement_ids = [item[0] for item in statements]
+        if len(statements) > 1 and document_id in statement_ids:
+            position = statement_ids.index(document_id)
+            st.caption(f"Relevé bancaire {position + 1} sur {len(statements)}")
+            previous_col, next_col = st.columns(2)
+            with previous_col:
+                if st.button(
+                    "Relevé précédent",
+                    icon=":material/arrow_back:",
+                    key=f"previous_statement_{document_id}",
+                    disabled=position == 0,
+                    width="stretch",
+                ):
+                    _open_document_or_resume(statements[position - 1])
+                    st.rerun()
+            with next_col:
+                if st.button(
+                    "Relevé suivant",
+                    icon=":material/arrow_forward:",
+                    key=f"next_statement_{document_id}",
+                    disabled=position >= len(statements) - 1,
+                    width="stretch",
+                ):
+                    _open_document_or_resume(statements[position + 1])
+                    st.rerun()
+
+    title_col, delete_col = st.columns([4, 1])
     with title_col:
         st.subheader(f"Détails — {document.get('filename', 'Document')}")
-    with close_col:
-        if already_reviewed:
-            if st.button(
-                "Fermer",
-                icon=":material/close:",
-                key=f"close_document_review_{document_id}",
-                width="stretch",
-            ):
-                st.session_state.current_doc_id = None
-                st.session_state.last_result = None
-                st.session_state.confirmed_fields = {}
-                st.rerun()
-        else:
+        if not already_reviewed:
             st.badge("À vérifier", color="orange", icon=":material/rate_review:")
+    with delete_col:
+        if st.button(
+            "Supprimer",
+            icon=":material/delete:",
+            key=f"delete_reviewed_document_{document_id}",
+            width="stretch",
+        ):
+            delete_one_document_dialog(document_id)
     st.caption(
         "Comparez les informations détectées avec le justificatif, corrigez-les "
         "si nécessaire, puis validez pour accéder au document suivant."
@@ -722,13 +931,6 @@ def render_guided_document_review(document_id, document, journey_step, advisor_i
         st.error(
             f"Document rejeté : {control_result.get('reason', 'raison inconnue')}"
         )
-        if st.button(
-            "Supprimer et déposer un autre document",
-            icon=":material/delete:",
-            width="stretch",
-            key=f"guided_delete_invalid_{document_id}",
-        ):
-            delete_one_document_dialog(document_id)
         return
 
     security = result.get("extraction_security", {})
@@ -747,6 +949,11 @@ def render_guided_document_review(document_id, document, journey_step, advisor_i
     submitted = render_document_review(
         result, document["type"], document_id, advisor_id,
         st.session_state.session_id, confirmations,
+        submit_label=(
+            "Enregistrer et passer au document suivant"
+            if already_reviewed
+            else "Valider et continuer"
+        ),
     )
     if submitted:
         updated = dict(document, confirmed_fields=confirmations, journey_reviewed=True)
@@ -756,9 +963,24 @@ def render_guided_document_review(document_id, document, journey_step, advisor_i
             st.error("La sauvegarde a échoué. Vos saisies sont conservées ; réessayez.")
             return
         document.update(updated)
-        st.session_state.current_doc_id = None
-        st.session_state.last_result = None
-        st.session_state.confirmed_fields = {}
+        if document.get("type") == "releve":
+            st.session_state.additional_statement_mode = False
+            statements = _bank_statements()
+            statement_ids = [item[0] for item in statements]
+            position = statement_ids.index(document_id) if document_id in statement_ids else -1
+            next_document = (
+                statements[position + 1]
+                if 0 <= position < len(statements) - 1
+                else _next_journey_document(
+                    document.get("type"), current_client_documents()
+                )
+            )
+        else:
+            next_document = _next_journey_document(
+                document.get("type"),
+                current_client_documents(),
+            )
+        _open_document_or_resume(next_document)
         st.session_state.journey_notice = "Les corrections détaillées sont enregistrées."
         st.rerun()
 
@@ -831,6 +1053,7 @@ def reset_documents_dialog():
         failures = _remove_uploaded_files(stored_paths + session_paths)
         _clear_document_session(documents)
         st.session_state.compromis_skipped = False
+        st.session_state.additional_statement_mode = False
         for document_id in documents:
             st.session_state.documents.pop(document_id, None)
         audit.log_event(
@@ -1190,7 +1413,8 @@ def render_application_sidebar():
                 for key in (
                     "documents", "current_doc_id", "confirmed_fields", "last_result",
                     "chat_history", "credit_profile", "customer_profile",
-                    "compromis_skipped",
+                    "compromis_skipped", "additional_statement_mode",
+                    "editing_home_project", "continue_after_project",
                 ):
                     st.session_state.pop(key, None)
                 st.session_state.account_created = False
@@ -1304,7 +1528,10 @@ elif st.session_state.page == "Accueil":
 
     editing_project = st.session_state.get("editing_home_project", False)
 
-    if saved_project and not editing_project:
+    if editing_project:
+        render_housing_project_dialog(saved_project)
+
+    if saved_project:
         with st.container(key="home_project_summary", border=True):
             summary_title, summary_action = st.columns(
                 [4, 1], vertical_alignment="center"
@@ -1322,9 +1549,10 @@ elif st.session_state.page == "Accueil":
                     key="edit_home_project",
                 ):
                     st.session_state.editing_home_project = True
+                    st.session_state.continue_after_project = False
                     st.rerun()
 
-            project_metrics = st.columns(4)
+            project_metrics = st.columns(3)
             project_metrics[0].metric(
                 "Ville", saved_project.get("city") or "À préciser", border=True
             )
@@ -1332,63 +1560,23 @@ elif st.session_state.page == "Accueil":
                 "Type de bien", saved_project.get("property_type") or "À préciser", border=True
             )
             project_metrics[2].metric(
-                "Budget",
-                f"{float(saved_project.get('purchase_price') or 0):,.0f} MAD",
-                border=True,
-            )
-            project_metrics[3].metric(
                 "Durée",
                 f"{int(saved_project.get('duration_years') or 20)} ans",
                 border=True,
             )
 
-    if not saved_project or editing_project:
-        with st.container(key="home_project_summary", border=True):
-            st.markdown("### Personnaliser mon projet")
-            st.caption("Ces informations seront reprises automatiquement dans vos simulations.")
-            with st.form("housing_project_profile"):
-                project_left, project_right = st.columns(2)
-                city = project_left.text_input(
-                    "Ville du projet", value=saved_project.get("city") or ""
-                )
-                property_options = ["Appartement", "Maison", "Terrain + construction", "Autre"]
-                saved_type = saved_project.get("property_type") or property_options[0]
-                property_type = project_right.selectbox(
-                    "Type de bien", property_options,
-                    index=property_options.index(saved_type) if saved_type in property_options else 0,
-                )
-                purchase_price = project_left.number_input(
-                    "Budget estimé (MAD)", min_value=0.0,
-                    value=float(saved_project.get("purchase_price") or 600000), step=10000.0,
-                )
-                contribution = project_right.number_input(
-                    "Apport personnel (MAD)", min_value=0.0,
-                    value=float(saved_project.get("contribution") or 100000), step=5000.0,
-                )
-                duration_years = st.slider(
-                    "Durée souhaitée", 5, 30,
-                    int(saved_project.get("duration_years") or 20), format="%d ans",
-                )
-                save_project_button = st.form_submit_button(
-                    "Enregistrer mon projet", type="primary", width="stretch"
-                )
-            if save_project_button:
-                if contribution > purchase_price:
-                    st.error("L'apport ne peut pas dépasser le prix estimé du bien.")
-                else:
-                    save_project(
-                        st.session_state.current_client_id, city.strip(), property_type,
-                        purchase_price, contribution, duration_years,
-                    )
-                    st.session_state.editing_home_project = False
-                    st.toast("Votre projet est enregistré.", icon=":material/check_circle:")
-                    st.rerun()
-
     # -----------------------------------------------------
     # ACTIONS CONTEXTUELLES
     # -----------------------------------------------------
 
-    if dossier_complete:
+    if not saved_project:
+        primary_title = "Décrire mon projet"
+        primary_text = "Indiquez le type de bien, la ville et la durée souhaitée du crédit."
+        primary_caption = "Première étape · moins d'une minute"
+        primary_label = "Décrire mon projet"
+        primary_icon = ":material/home_work:"
+        primary_page = None
+    elif dossier_complete:
         primary_title = "Votre simulation est disponible"
         primary_text = "Consultez votre mensualité, votre capacité d’emprunt et comparez les durées."
         primary_caption = "Données issues de vos informations vérifiées"
@@ -1420,7 +1608,11 @@ elif st.session_state.page == "Accueil":
                 primary_label, icon=primary_icon, type="primary", width="stretch",
                 disabled=st.session_state.processing, key="home_primary_action_button",
             ):
-                st.session_state.page = primary_page
+                if primary_page is None:
+                    st.session_state.editing_home_project = True
+                    st.session_state.continue_after_project = True
+                else:
+                    st.session_state.page = primary_page
                 st.rerun()
 
     with action_right:
@@ -1451,7 +1643,7 @@ elif st.session_state.page == "Accueil":
             st.caption("PROJET IMMOBILIER")
             st.markdown("### " + ("Renseigné" if saved_project else "À compléter"))
             st.write(
-                "Votre budget, votre apport et la durée sont enregistrés."
+                "Le type de bien, la ville et la durée sont enregistrés."
                 if saved_project else
                 "Renseignez les caractéristiques principales de votre projet."
             )
@@ -1508,6 +1700,11 @@ elif st.session_state.page == "Extraction":
     if not st.session_state.account_created:
         st.session_state.page = "Accueil"
         st.rerun()
+    if not load_project(st.session_state.current_client_id):
+        st.session_state.editing_home_project = True
+        st.session_state.continue_after_project = True
+        st.session_state.page = "Accueil"
+        st.rerun()
     st.title("Mon parcours de crédit habitat")
     st.caption(
         "Avancez simplement, une étape après l'autre. Le prochain document à "
@@ -1530,6 +1727,13 @@ elif st.session_state.page == "Extraction":
         if doc_data.get("client_id") == st.session_state.current_client_id
     }
 
+    statement_count = len(_bank_statements(client_docs))
+    if statement_count >= MAX_BANK_STATEMENTS:
+        st.session_state.additional_statement_mode = False
+    additional_statement_mode = bool(
+        st.session_state.get("additional_statement_mode")
+    )
+
     journey_step = credit_journey_step(client_docs)
     _, _, dossier_complete, _ = dossier_readiness()
 
@@ -1539,8 +1743,9 @@ elif st.session_state.page == "Extraction":
     selected_document = st.session_state.documents.get(
         st.session_state.current_doc_id
     )
-    if not selected_document and journey_step < len(DOCUMENT_JOURNEY):
-        active_document_type = DOCUMENT_JOURNEY[journey_step]["type"]
+    active_journey_step = 2 if additional_statement_mode else journey_step
+    if not selected_document and active_journey_step < len(DOCUMENT_JOURNEY):
+        active_document_type = DOCUMENT_JOURNEY[active_journey_step]["type"]
         pending_reviews = [
             (document_id, document)
             for document_id, document in client_docs.items()
@@ -1563,91 +1768,26 @@ elif st.session_state.page == "Extraction":
 
     # Un dossier finalisé reste entièrement consultable depuis « Mes documents ».
     # L'étape 6 sert uniquement à afficher toutes les coches dans ce cas.
-    render_credit_journey(6 if dossier_complete else journey_step)
+    render_credit_journey(
+        2 if additional_statement_mode else (6 if dossier_complete else journey_step),
+        client_docs,
+    )
     st.divider()
-    
-    with st.expander(
-        "Mes justificatifs — revoir ou corriger",
-        expanded=bool(client_docs),
-    ):
-        if client_docs:
 
-            # Afficher les documents dans une grille
-            cols = st.columns(2)
-            for idx, (doc_id, doc_data) in enumerate(client_docs.items()):
-                col = cols[idx % 2]
-                with col:
-                    is_active = doc_id == st.session_state.current_doc_id
-                    status = doc_data.get('status', 'inconnu')
-
-                    # Couleur selon le statut
-                    status_color = {
-                        'completed': (
-                            '✅'
-                            if doc_data.get('journey_reviewed') is True
-                            else '🟠'
-                        ),
-                        'processing': '⏳',
-                        'error': '❌',
-                        'inconnu': '⏸️'
-                    }.get(status, '⏸️')
-
-                    status_text = {
-                        'completed': (
-                            'Validé'
-                            if doc_data.get('journey_reviewed') is True
-                            else 'À vérifier'
-                        ),
-                        'processing': 'En cours...',
-                        'error': 'Erreur',
-                        'inconnu': 'En attente'
-                    }.get(status, 'En attente')
-
-                    with st.container(border=True):
-                        col_btn, col_status = st.columns([3, 1])
-                        with col_btn:
-                            if st.button(
-                                f"Revoir — {doc_data.get('filename', 'Document')[:24]}",
-                                icon=":material/edit_document:",
-                                key=f"view_{doc_id}",
-                                width="stretch",
-                            ):
-                                st.session_state.current_doc_id = doc_id
-                                st.session_state.last_result = doc_data.get('result')
-                                st.session_state.confirmed_fields = doc_data.get('confirmed_fields', {})
-                                st.rerun()
-                        with col_status:
-                            st.caption(f"{status_color} {status_text}")
-
-                        # Infos supplémentaires
-                        st.caption(f"Type: {doc_data.get('type', 'Inconnu')}")
-                        if doc_data.get('timestamp'):
-                            st.caption(f"📅 {doc_data.get('timestamp')[:16]}")
-                        if st.button(
-                            "Supprimer ce justificatif",
-                            icon=":material/delete:",
-                            key=f"delete_card_{doc_id}",
-                            width="stretch",
-                        ):
-                            delete_one_document_dialog(doc_id)
-
-                    st.write("")  # Espacement
-
-            if st.button(
-                "Recommencer avec de nouveaux justificatifs",
-                icon=":material/delete_sweep:",
-                key="reset_all_documents",
-            ):
-                reset_documents_dialog()
-
-            st.divider()
-
+    # Lorsqu'une étape documentaire est sélectionnée, sa fiche de
+    # vérification s'affiche immédiatement. Les boutons du parcours en haut
+    # remplacent l'ancienne grille de documents.
     selected = st.session_state.documents.get(st.session_state.current_doc_id)
     if selected and selected.get("status") == "completed" and selected.get("result"):
-        render_guided_document_review(st.session_state.current_doc_id, selected, journey_step, advisor_id)
+        render_guided_document_review(
+            st.session_state.current_doc_id,
+            selected,
+            journey_step,
+            advisor_id,
+        )
         st.stop()
 
-    if journey_step >= 4:
+    if not additional_statement_mode and journey_step >= 4:
         st.success(
             "Vos justificatifs sont enregistrés. Vérifiez maintenant les 5 informations "
             "essentielles dans un tableau unique pour débloquer la simulation."
@@ -1663,6 +1803,18 @@ elif st.session_state.page == "Extraction":
             ):
                 st.session_state.page = "Verification"
                 st.rerun()
+
+        with action_right:
+            if statement_count < MAX_BANK_STATEMENTS:
+                if st.button(
+                    f"Ajouter un autre relevé ({statement_count}/{MAX_BANK_STATEMENTS})",
+                    icon=":material/note_add:",
+                    width="stretch",
+                    key="add_statement_after_documents",
+                ):
+                    _request_additional_statement()
+            else:
+                st.success("3 relevés bancaires enregistrés")
       
 
         if st.session_state.get("compromis_skipped", False):
@@ -1678,11 +1830,38 @@ elif st.session_state.page == "Extraction":
                 st.rerun()
         st.stop()
 
-    document_step = DOCUMENT_JOURNEY[journey_step]
+    document_step = (
+        DOCUMENT_JOURNEY[2]
+        if additional_statement_mode
+        else DOCUMENT_JOURNEY[journey_step]
+    )
     document_type = document_step["type"]
 
-    st.subheader(f"Étape {journey_step + 1} — {document_step['title']}")
+    if additional_statement_mode:
+        st.subheader(
+            f"Ajouter un relevé bancaire — "
+            f"{statement_count + 1} sur {MAX_BANK_STATEMENTS}"
+        )
+        st.info(
+            "Les relevés supplémentaires sont facultatifs. Ils permettent "
+            "d'estimer plus fiablement la régularité des revenus et des charges."
+        )
+    else:
+        st.subheader(f"Étape {journey_step + 1} — {document_step['title']}")
     st.write(document_step["instruction"])
+
+    if (
+        not additional_statement_mode
+        and document_type == "compromis"
+        and statement_count < MAX_BANK_STATEMENTS
+    ):
+        if st.button(
+            f"Ajouter un autre relevé ({statement_count}/{MAX_BANK_STATEMENTS})",
+            icon=":material/note_add:",
+            width="stretch",
+            key="add_statement_before_compromise",
+        ):
+            _request_additional_statement()
 
     if document_step["optional"]:
         st.info(
@@ -1750,7 +1929,12 @@ elif st.session_state.page == "Extraction":
                     f"Formats acceptés : {', '.join(settings.allowed_extensions)}. "
                     f"Taille max : {settings.max_file_size_mb} MB"
                 ),
-                key=f"uploader_{st.session_state.current_client_id}_{document_type}",
+                key=(
+                    f"uploader_{st.session_state.current_client_id}_{document_type}_"
+                    f"{statement_count}"
+                    if document_type == "releve"
+                    else f"uploader_{st.session_state.current_client_id}_{document_type}"
+                ),
             )
             uploaded_files = [uploaded_value] if uploaded_value is not None else []
 
@@ -1950,20 +2134,31 @@ elif st.session_state.page == "Verification":
             st.rerun()
         st.stop()
 
+    if st.button(
+        "Retour à mes justificatifs",
+        icon=":material/arrow_back:",
+        type="primary",
+        key="verification_back_to_documents_top",
+    ):
+        st.session_state.page = "Extraction"
+        st.rerun()
+
     st.title("Vérifier mes informations")
     st.caption(
         "Retrouvez vos informations déjà corrigées. Vous pouvez les modifier avant votre "
         "simulation."
+    )
+    verification_project = (
+        load_project(st.session_state.current_client_id)
+        or st.session_state.get("quick_project", {})
     )
     render_final_verification(
         client_docs,
         st.session_state.current_client_id,
         advisor_id,
         st.session_state.session_id,
+        verification_project,
     )
-    if st.button("Retourner à mes documents", icon=":material/arrow_back:"):
-        st.session_state.page = "Extraction"
-        st.rerun()
 
 # =========================================================
 # PAGE SIMULATION CLIENT

@@ -2,12 +2,13 @@
 import csv
 import io
 import re
+import statistics
 from datetime import datetime
 
 import streamlit as st
 
 from database import audit
-from database.customer_accounts import save_document
+from database.customer_accounts import save_document, save_project
 from extraction.confirmation import make_confirmation
 from extraction.financial_metrics import debt_ratio
 
@@ -19,6 +20,60 @@ BUSINESS_FIELDS = {
     "charge_mensuelle_credits": {"label": "Charges mensuelles de crédits", "type": "Nombre (MAD)", "document": "releve", "required": True},
     "revenus_complementaires": {"label": "Revenus complémentaires", "type": "Nombre (MAD)", "document": "releve", "required": True},
 }
+
+FINANCIAL_STATEMENT_FIELDS = {
+    "charge_mensuelle_credits",
+    "revenus_complementaires",
+}
+DOSSIER_FIELD_KEYS = {
+    field: f"dossier_{field}"
+    for field in FINANCIAL_STATEMENT_FIELDS
+}
+
+
+def _aggregate_financial_values(field, values):
+    """Agrégation prudente de 1 à 3 mois confirmés par le client."""
+    numeric = [float(value) for value in values]
+    if not numeric:
+        return None, "Aucune valeur confirmée"
+    if field == "revenus_complementaires":
+        # Avec deux mois, retenir la valeur basse empêche qu'un virement
+        # exceptionnel sur un seul relevé soit considéré comme régulier.
+        aggregate = statistics.median_low(numeric)
+    else:
+        # Pour les charges, retenir la valeur haute à deux mois est plus
+        # prudent et évite de sous-estimer un crédit existant.
+        aggregate = statistics.median_high(numeric)
+
+    if len(numeric) == 1:
+        regularity = "Estimation sur 1 relevé"
+    elif max(numeric) == min(numeric):
+        regularity = f"Stable sur {len(numeric)} relevés"
+    else:
+        denominator = max(abs(aggregate), 1.0)
+        variation = (max(numeric) - min(numeric)) / denominator
+        regularity = (
+            f"Régulier sur {len(numeric)} relevés"
+            if variation <= 0.20
+            else f"Variable sur {len(numeric)} relevés — à confirmer"
+        )
+    return round(float(aggregate), 2), regularity
+
+
+def _valid_dossier_override(documents, field, source_ids):
+    key = DOSSIER_FIELD_KEYS[field]
+    overrides = []
+    for document_id, document in documents.items():
+        record = (document.get("confirmed_fields") or {}).get(key)
+        if not _valid_confirmation(record, document_id):
+            continue
+        aggregation = record.get("aggregation") or {}
+        if set(aggregation.get("source_document_ids") or []) == set(source_ids):
+            overrides.append((document_id, document, record))
+    return max(
+        overrides,
+        key=lambda item: item[2].get("confirmed_at") or "",
+    ) if overrides else None
 
 
 def _canonical_value(value, expected_type):
@@ -66,21 +121,44 @@ def build_client_summary(documents):
             record = (document.get("confirmed_fields") or {}).get(field)
             if _valid_confirmation(record, document_id):
                 candidates.append((document_id, document, record))
-        unique = {
-            _canonical_value(item[2]["value"], spec["type"])
-            for item in candidates
-        }
-        conflict = len(unique) > 1
-        selected = max(candidates, key=lambda item: item[2]["confirmed_at"]) if candidates and not conflict else None
-        if conflict:
-            status, value, document_name, source = "Conflit", None, None, {}
-        elif selected:
-            _, document, record = selected
-            status, value = "Confirmé", record["value"]
-            document_name = document.get("filename")
-            source = record.get("source") or {}
+        if field in FINANCIAL_STATEMENT_FIELDS and candidates:
+            source_ids = [item[0] for item in candidates]
+            override = _valid_dossier_override(documents, field, source_ids)
+            if override:
+                _, document, record = override
+                value = record["value"]
+                aggregation = record.get("aggregation") or {}
+                regularity = aggregation.get("regularity") or "Confirmé par le client"
+                source = record.get("source") or {}
+            else:
+                value, regularity = _aggregate_financial_values(
+                    field, [item[2]["value"] for item in candidates]
+                )
+                _, document, record = candidates[0]
+                source = record.get("source") or {}
+            status = "Confirmé"
+            document_name = ", ".join(
+                dict.fromkeys(item[1].get("filename") or "Relevé" for item in candidates)
+            )
+            conflict = False
+            selected = None
         else:
-            status, value, document_name, source = ("Manquant" if spec["required"] else "Optionnel absent"), None, None, {}
+            regularity = None
+            unique = {
+                _canonical_value(item[2]["value"], spec["type"])
+                for item in candidates
+            }
+            conflict = len(unique) > 1
+            selected = max(candidates, key=lambda item: item[2]["confirmed_at"]) if candidates and not conflict else None
+            if conflict:
+                status, value, document_name, source = "Conflit", None, None, {}
+            elif selected:
+                _, document, record = selected
+                status, value = "Confirmé", record["value"]
+                document_name = document.get("filename")
+                source = record.get("source") or {}
+            else:
+                status, value, document_name, source = ("Manquant" if spec["required"] else "Optionnel absent"), None, None, {}
         if spec["required"] and status != "Confirmé":
             complete = False
         rows.append({
@@ -88,6 +166,7 @@ def build_client_summary(documents):
             "Valeur confirmée": value, "Statut": status,
             "Pièce originale": document_name, "Page": source.get("page"),
             "Extrait": source.get("quote"), "SHA-256": source.get("sha256"),
+            "Régularité": regularity,
         })
     return rows, complete
 
@@ -186,6 +265,38 @@ def _field_proposal(documents, field, spec):
         if isinstance(decision, dict):
             extracted.append((document_id, document, decision))
 
+    if field in FINANCIAL_STATEMENT_FIELDS and confirmed:
+        value, regularity = _aggregate_financial_values(
+            field, [item[2]["value"] for item in confirmed]
+        )
+        selected = confirmed[0]
+        document_id, document, record, decision = selected
+        source_ids = [item[0] for item in confirmed]
+        sources = ", ".join(
+            dict.fromkeys(item[1].get("filename") or "Relevé" for item in confirmed)
+        )
+        return {
+            "field": field,
+            "value": str(value),
+            "status": regularity,
+            "source": sources,
+            "target": (document_id, document),
+            "decision": {
+                "value": value,
+                "source": record.get("source") or (decision or {}).get("source"),
+            },
+            "aggregation": {
+                "method": (
+                    "median_low"
+                    if field == "revenus_complementaires"
+                    else "median_high"
+                ),
+                "source_document_ids": source_ids,
+                "source_values": [float(item[2]["value"]) for item in confirmed],
+                "regularity": regularity,
+            },
+        }
+
     if confirmed:
         unique = {
             _canonical_value(item[2]["value"], spec["type"])
@@ -230,7 +341,23 @@ def _field_proposal(documents, field, spec):
     }
 
 
-def render_final_verification(documents, customer_id, advisor_id, session_id):
+def _confirmed_document_value(documents, document_type, field):
+    """Retourne la dernière valeur explicitement confirmée pour une pièce."""
+    candidates = []
+    for document_id, document in documents.items():
+        if document.get("type") != document_type:
+            continue
+        record = (document.get("confirmed_fields") or {}).get(field)
+        if _valid_final_confirmation(record, document_id):
+            candidates.append((record.get("confirmed_at") or "", record.get("value")))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def render_final_verification(
+    documents, customer_id, advisor_id, session_id, project=None,
+):
     """Affiche un seul tableau, valide toutes les valeurs, puis ouvre la simulation."""
     proposals = {
         field: _field_proposal(documents, field, BUSINESS_FIELDS[field])
@@ -254,21 +381,52 @@ def render_final_verification(documents, customer_id, advisor_id, session_id):
             + ", ".join(conflicts)
             + ". Corrigez la colonne « Valeur » après comparaison des pièces."
         )
+    project = project or {}
+    compromise_price = _confirmed_document_value(documents, "compromis", "prix_vente")
+    initial_price = float(compromise_price or project.get("purchase_price") or 0)
+    initial_contribution = float(project.get("contribution") or 0)
     values = {}
     with st.form(f"five_fields_verification_{customer_id}", border=True):
         st.caption("Ces valeurs reprennent vos corrections. En continuant, vous confirmez ce récapitulatif.")
         for field in FIELD_ORDER:
+            if field in FINANCIAL_STATEMENT_FIELDS:
+                st.caption(
+                    f"{BUSINESS_FIELDS[field]['label']} — "
+                    f"{proposals[field]['status']}"
+                )
             values[field] = st.text_input(
                 BUSINESS_FIELDS[field]["label"], value=proposals[field]["value"],
                 key=f"final_{customer_id}_{field}_" + str(proposals[field]["value"]),
                 help="JJ/MM/AAAA ou AAAA-MM-JJ" if field == "date_embauche" else None,
             )
+        st.markdown("#### Mon financement")
+        if compromise_price is not None:
+            st.caption(
+                "Le prix du bien provient du compromis que vous avez vérifié. "
+                "Vous pouvez encore le corriger avant la simulation."
+            )
+        project_left, project_right = st.columns(2)
+        purchase_price = project_left.number_input(
+            "Prix du bien (MAD)", min_value=0.0, value=initial_price,
+            step=10000.0, key=f"final_{customer_id}_purchase_price",
+        )
+        contribution = project_right.number_input(
+            "Apport personnel (MAD)", min_value=0.0,
+            value=initial_contribution, step=5000.0,
+            key=f"final_{customer_id}_contribution",
+        )
+        financing_need = max(purchase_price - contribution, 0.0)
+        st.info(f"Montant à financer estimé : {financing_need:,.0f} MAD")
         submitted = st.form_submit_button("Voir ma simulation", type="primary", width="stretch")
     if not submitted:
         return False
 
     prepared = {}
     errors = []
+    if purchase_price <= 0:
+        errors.append("Prix du bien : renseignez un montant supérieur à 0")
+    if contribution > purchase_price:
+        errors.append("Apport personnel : il ne peut pas dépasser le prix du bien")
     for field in FIELD_ORDER:
         proposal = proposals[field]
         if proposal["target"] is None:
@@ -285,6 +443,13 @@ def render_final_verification(documents, customer_id, advisor_id, session_id):
             )
             if field == "salaire_net" and float(confirmation["value"]) <= 0:
                 raise ValueError("le revenu mensuel net doit être supérieur à 0")
+            if field in FINANCIAL_STATEMENT_FIELDS:
+                confirmation["aggregation"] = proposal.get("aggregation") or {
+                    "method": "confirmation_client",
+                    "source_document_ids": [document_id],
+                    "source_values": [float(confirmation["value"])],
+                    "regularity": "Confirmé par le client",
+                }
             prepared[field] = (document_id, document, confirmation)
         except (TypeError, ValueError) as exc:
             errors.append(f"{BUSINESS_FIELDS[field]['label']} : {exc}")
@@ -310,6 +475,17 @@ def render_final_verification(documents, customer_id, advisor_id, session_id):
     updated = deepcopy(documents)
     modified = set()
     for field, (selected_id, _, confirmation) in prepared.items():
+        if field in FINANCIAL_STATEMENT_FIELDS:
+            dossier_key = DOSSIER_FIELD_KEYS[field]
+            for document_id, document in updated.items():
+                if dossier_key in (document.get("confirmed_fields") or {}):
+                    document["confirmed_fields"].pop(dossier_key)
+                    modified.add(document_id)
+            updated[selected_id].setdefault("confirmed_fields", {})[
+                dossier_key
+            ] = confirmation
+            modified.add(selected_id)
+            continue
         for document_id, document in updated.items():
             if document_id != selected_id and field in (document.get("confirmed_fields") or {}):
                 document["confirmed_fields"].pop(field)
@@ -319,6 +495,14 @@ def render_final_verification(documents, customer_id, advisor_id, session_id):
     try:
         for document_id in modified:
             save_document(customer_id, document_id, updated[document_id])
+        save_project(
+            customer_id,
+            project.get("city") or "",
+            project.get("property_type") or "",
+            purchase_price,
+            contribution,
+            int(project.get("duration_years") or 20),
+        )
     except Exception:
         st.error("La sauvegarde a échoué. Réessayez avant de poursuivre.")
         return False
