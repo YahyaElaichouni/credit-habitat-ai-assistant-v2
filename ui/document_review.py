@@ -1,10 +1,6 @@
 """Interface de revue : l'état de confirmation est propre à chaque document."""
 
 import json
-import re
-import unicodedata
-from collections import defaultdict
-from pathlib import Path
 from typing import get_args
 from ui.document_preview import (
     preferred_source_page,
@@ -14,7 +10,7 @@ import streamlit as st
 
 from database import audit
 from extraction.confirmation import (
-    REQUIRED_FIELDS, DATE_FIELDS, make_confirmation, export_confirmed_csv,
+    REQUIRED_FIELDS, DATE_FIELDS, make_confirmation,
 )
 from extraction.schema import DOCUMENT_SCHEMAS, ExtractedField
 
@@ -34,37 +30,6 @@ REVIEW_FIELDS = {
                        "date_expiration", "adresse"),
     "compromis": ("prix_vente", "adresse_bien", "date_signature"),
 }
-
-
-def _normalized_label(value):
-    text = unicodedata.normalize("NFKD", str(value or ""))
-    text = "".join(char for char in text if not unicodedata.combining(char))
-    return re.sub(r"\s+", " ", text).strip().upper()
-
-
-def _observed_recurring_incoming(transactions):
-    """Retourne un total indicatif, jamais une validation automatique."""
-    groups = defaultdict(list)
-    for item in transactions or []:
-        if not isinstance(item, dict) or str(item.get("type") or "").lower() != "credit":
-            continue
-        label = _normalized_label(item.get("description"))
-        if not (label.startswith("VIR-INST DE ") or label.startswith("VIREMENT RECU DE ")):
-            continue
-        if any(word in label for word in ("SALAIRE", "REMBOURSEMENT", "ANNULATION")):
-            continue
-        try:
-            amount = abs(float(item.get("montant")))
-        except (TypeError, ValueError):
-            continue
-        if amount:
-            # Retirer les références numériques variables pour regrouper un même émetteur.
-            group = re.sub(r"\b\d+\b", "", label)
-            groups[re.sub(r"\s+", " ", group).strip()].append(amount)
-    candidates = [values for values in groups.values() if len(values) >= 2]
-    if len(candidates) != 1:
-        return None
-    return round(sum(candidates[0]), 2)
 
 
 def _numeric(document_type, field):

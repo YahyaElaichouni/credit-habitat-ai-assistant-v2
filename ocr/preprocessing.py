@@ -6,7 +6,6 @@ Projet PFE Crédit Agricole du Maroc
 """
 
 import cv2
-import numpy as np
 
 
 class ImagePreprocessor:
