@@ -7,7 +7,11 @@ from datetime import datetime
 from pathlib import Path
 
 CREDIT_CHARGE_PATTERN = (
-    r"\b(?:mensualite|echeance|prelevement|reglement|remboursement|traite)\w*"
+    # « REGLEMENT CREDIT CARTE » est un libellé CIH de mouvement carte :
+    # il peut se trouver dans la colonne CREDIT et ne prouve jamais, à lui
+    # seul, une mensualité de prêt. Une charge exige donc un terme explicite
+    # d'échéance, de prélèvement ou de remboursement.
+    r"\b(?:mensualite|echeance|prelevement|remboursement)\w*"
     r".{0,35}\b(?:credit|pret|financement|habitat|logement|immobilier|auto|conso)\w*"
     r"|\b(?:credit|pret|financement)\w*.{0,35}"
     r"\b(?:mensualite|echeance|prelevement|habitat|logement|immobilier|auto|conso)\w*"
@@ -345,21 +349,33 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
         page_number = page_item.get("page")
         if type(page_number) is not int:
             continue
-        page_text = _norm(" ".join(str(page_item.get("text") or "").split()))
-        for match in pattern.finditer(page_text):
-            day = _transaction_date(match.group("date"), pages)
-            amount = _amount(match.group("amount"))
-            if not valid_day(day) or amount is None or amount <= 0:
-                continue
-            found.append({
-                "date": match.group("date"),
-                "description": match.group("description").strip(),
-                "montant": amount,
-                "type": transaction_type,
-                "page": page_number,
-                "quote": match.group(0).strip(),
-                "month": day.strftime("%Y-%m"),
-            })
+        raw_page_text = str(page_item.get("text") or "")
+
+        # Ne jamais exécuter le motif structuré sur toute la page aplatie.
+        # Sur CIH, cela pouvait partir de « SOLDE DEPART 25/12/2024 »,
+        # traverser le retour à la ligne et attribuer cette date au virement
+        # du 05/01. La série se retrouvait alors artificiellement répartie
+        # sur deux mois et le calcul était rejeté comme irrégulier.
+        for raw_line in raw_page_text.splitlines():
+            normalized_line = _norm(raw_line)
+            for match in pattern.finditer(normalized_line):
+                day = _transaction_date(match.group("date"), pages)
+                amount = _amount(match.group("amount"))
+                if not valid_day(day) or amount is None or amount <= 0:
+                    continue
+                found.append({
+                    "date": match.group("date"),
+                    "description": match.group("description").strip(),
+                    "montant": amount,
+                    "type": transaction_type,
+                    "page": page_number,
+                    "quote": " ".join(raw_line.split()),
+                    "month": day.strftime("%Y-%m"),
+                })
+
+        # Cette version aplatie reste réservée au dernier secours ci-dessous,
+        # lorsque l'OCR a réellement séparé les cellules sur plusieurs lignes.
+        page_text = _norm(" ".join(raw_page_text.split()))
 
         # Secours indépendant des séparateurs de colonnes. PaddleOCR peut
         # produire une ligne correcte mais accoler les deux dates
@@ -372,7 +388,7 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
         flexible_amount = re.compile(
             r"(?<!\d)(?:\d{1,3}(?:[ .]\d{3})+|\d+)[,.]\d{2}(?!\d)"
         )
-        for raw_line in str(page_item.get("text") or "").splitlines():
+        for raw_line in raw_page_text.splitlines():
             line = _norm(raw_line)
             if not line or not re.search(keyword_pattern, line, re.I):
                 continue

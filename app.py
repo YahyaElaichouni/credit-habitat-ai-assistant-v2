@@ -183,9 +183,8 @@ def render_customer_access_dialog():
                         st.rerun()
 
 
-@st.dialog("Décrire mon projet", width="large")
-def render_housing_project_dialog(project=None):
-    """Saisir la première étape du parcours avant les justificatifs."""
+def render_housing_project_step(project=None):
+    """Afficher la description du projet comme première page du parcours."""
     project = project or {}
     property_options = [
         "Appartement",
@@ -196,48 +195,39 @@ def render_housing_project_dialog(project=None):
     saved_type = project.get("property_type") or property_options[0]
     saved_duration = int(project.get("duration_years") or 20)
 
-    st.caption(
-        "Ces informations seront enregistrées et reprises automatiquement "
-        "dans votre simulation."
-    )
-    with st.form("housing_project_profile", border=False):
-        left, right = st.columns(2)
-        property_type = left.selectbox(
-            "Type de bien *",
-            property_options,
-            index=(
-                property_options.index(saved_type)
-                if saved_type in property_options
-                else 0
-            ),
-        )
-        city = right.text_input(
-            "Ville du projet *",
-            value=project.get("city") or "",
-            placeholder="Ex. Rabat",
-        )
-        duration_years = st.slider(
-            "Durée souhaitée du crédit",
-            min_value=5,
-            max_value=30,
-            value=max(5, min(30, saved_duration)),
-            format="%d ans",
-            help="Cette durée sera utilisée pour calculer la mensualité.",
-        )
-        submitted = st.form_submit_button(
-            (
-                "Enregistrer et continuer"
-                if st.session_state.get("continue_after_project")
-                else "Enregistrer les modifications"
-            ),
-            type="primary",
-            width="stretch",
-        )
-
-    if st.button("Annuler", width="stretch", key="cancel_housing_project"):
-        st.session_state.editing_home_project = False
-        st.session_state.continue_after_project = False
-        st.rerun()
+    st.title("Décrire mon projet")
+    st.caption("Étape 1 sur 4 · Ces informations seront reprises dans la simulation.")
+    with st.container(border=True):
+        st.markdown("### Mon projet immobilier")
+        with st.form("housing_project_profile", border=False):
+            left, right = st.columns(2)
+            property_type = left.selectbox(
+                "Type de bien *",
+                property_options,
+                index=(
+                    property_options.index(saved_type)
+                    if saved_type in property_options
+                    else 0
+                ),
+            )
+            city = right.text_input(
+                "Ville du projet *",
+                value=project.get("city") or "",
+                placeholder="Ex. Rabat",
+            )
+            duration_years = st.slider(
+                "Durée souhaitée du crédit",
+                min_value=5,
+                max_value=30,
+                value=max(5, min(30, saved_duration)),
+                format="%d ans",
+                help="Cette durée sera utilisée pour calculer la mensualité.",
+            )
+            submitted = st.form_submit_button(
+                "Enregistrer et continuer",
+                type="primary",
+                width="stretch",
+            )
 
     if not submitted:
         return
@@ -255,10 +245,7 @@ def render_housing_project_dialog(project=None):
         float(project.get("contribution") or 0),
         duration_years,
     )
-    continue_after_save = st.session_state.get("continue_after_project", False)
-    st.session_state.editing_home_project = False
-    st.session_state.continue_after_project = False
-    st.session_state.page = "Extraction" if continue_after_save else "Accueil"
+    st.session_state.page = "Extraction"
     st.toast("Votre projet est enregistré.", icon=":material/check_circle:")
     st.rerun()
 
@@ -267,6 +254,7 @@ def render_header():
     """Afficher un en-tête inspiré de l'identité institutionnelle du GCAM."""
     page_labels = {
         "Accueil": "Mon projet habitat",
+        "Projet": "Décrire mon projet",
         "Extraction": "Mes justificatifs",
         "Verification": "Vérification des informations",
         "Estimation": "Estimation rapide",
@@ -342,11 +330,11 @@ def render_header():
             if st.button(
                 "1  Mon projet",
                 width="stretch",
-                type="primary" if st.session_state.page == "Accueil" else "secondary",
+                type="primary" if st.session_state.page == "Projet" else "secondary",
                 key="top_nav_project",
                 disabled=st.session_state.processing,
             ):
-                _go_to("Accueil")
+                _go_to("Projet" if account_ready else "Accueil")
                 st.rerun()
         with nav_docs:
             if st.button(
@@ -472,7 +460,6 @@ def render_header():
                         "documents", "current_doc_id", "confirmed_fields", "last_result",
                         "chat_history", "credit_profile", "customer_profile",
                         "compromis_skipped", "additional_statement_mode",
-                        "editing_home_project", "continue_after_project",
                     ):
                         st.session_state.pop(key, None)
                     st.session_state.account_created = False
@@ -570,8 +557,7 @@ def render_cam_hero(eyebrow, title, text, badge):
         if not account_ready:
             render_customer_access_dialog()
         elif not project_ready:
-            st.session_state.editing_home_project = True
-            st.session_state.continue_after_project = True
+            _go_to("Projet")
             st.rerun()
         elif not documents_ready:
             _go_to("Extraction")
@@ -719,6 +705,7 @@ def _request_additional_statement():
     if len(statements) >= MAX_BANK_STATEMENTS:
         return
     st.session_state.additional_statement_mode = True
+    st.session_state.page = "Extraction"
     st.session_state.current_doc_id = None
     st.session_state.last_result = None
     st.session_state.confirmed_fields = {}
@@ -906,6 +893,17 @@ def render_guided_document_review(document_id, document, journey_step, advisor_i
                 ):
                     _open_document_or_resume(statements[position + 1])
                     st.rerun()
+        if len(statements) < MAX_BANK_STATEMENTS:
+            if st.button(
+                f"Ajouter un relevé ({len(statements)}/{MAX_BANK_STATEMENTS})",
+                icon=":material/note_add:",
+                type="primary",
+                width="stretch",
+                key=f"add_statement_from_review_{document_id}",
+            ):
+                _request_additional_statement()
+        else:
+            st.success("3 relevés bancaires enregistrés")
 
     title_col, delete_col = st.columns([4, 1])
     with title_col:
@@ -1414,7 +1412,6 @@ def render_application_sidebar():
                     "documents", "current_doc_id", "confirmed_fields", "last_result",
                     "chat_history", "credit_profile", "customer_profile",
                     "compromis_skipped", "additional_statement_mode",
-                    "editing_home_project", "continue_after_project",
                 ):
                     st.session_state.pop(key, None)
                 st.session_state.account_created = False
@@ -1526,11 +1523,6 @@ elif st.session_state.page == "Accueil":
     # SYNTHÈSE OU FORMULAIRE DU PROJET
     # -----------------------------------------------------
 
-    editing_project = st.session_state.get("editing_home_project", False)
-
-    if editing_project:
-        render_housing_project_dialog(saved_project)
-
     if saved_project:
         with st.container(key="home_project_summary", border=True):
             summary_title, summary_action = st.columns(
@@ -1548,8 +1540,7 @@ elif st.session_state.page == "Accueil":
                     "Modifier", icon=":material/edit:", width="stretch",
                     key="edit_home_project",
                 ):
-                    st.session_state.editing_home_project = True
-                    st.session_state.continue_after_project = False
+                    st.session_state.page = "Projet"
                     st.rerun()
 
             project_metrics = st.columns(3)
@@ -1575,7 +1566,7 @@ elif st.session_state.page == "Accueil":
         primary_caption = "Première étape · moins d'une minute"
         primary_label = "Décrire mon projet"
         primary_icon = ":material/home_work:"
-        primary_page = None
+        primary_page = "Projet"
     elif dossier_complete:
         primary_title = "Votre simulation est disponible"
         primary_text = "Consultez votre mensualité, votre capacité d’emprunt et comparez les durées."
@@ -1608,11 +1599,7 @@ elif st.session_state.page == "Accueil":
                 primary_label, icon=primary_icon, type="primary", width="stretch",
                 disabled=st.session_state.processing, key="home_primary_action_button",
             ):
-                if primary_page is None:
-                    st.session_state.editing_home_project = True
-                    st.session_state.continue_after_project = True
-                else:
-                    st.session_state.page = primary_page
+                st.session_state.page = primary_page
                 st.rerun()
 
     with action_right:
@@ -1693,6 +1680,18 @@ elif st.session_state.page == "Accueil":
 
 
 # =========================================================
+# PAGE DESCRIPTION DU PROJET
+# =========================================================
+
+elif st.session_state.page == "Projet":
+    if not st.session_state.account_created:
+        st.session_state.page = "Accueil"
+        st.rerun()
+    saved_project = load_project(st.session_state.current_client_id) or {}
+    render_housing_project_step(saved_project)
+
+
+# =========================================================
 # PAGE EXTRACTION AMÉLIORÉE AVEC GESTION MULTI-DOCUMENTS
 # =========================================================
 
@@ -1701,9 +1700,7 @@ elif st.session_state.page == "Extraction":
         st.session_state.page = "Accueil"
         st.rerun()
     if not load_project(st.session_state.current_client_id):
-        st.session_state.editing_home_project = True
-        st.session_state.continue_after_project = True
-        st.session_state.page = "Accueil"
+        st.session_state.page = "Projet"
         st.rerun()
     st.title("Mon parcours de crédit habitat")
     st.caption(
@@ -2134,14 +2131,29 @@ elif st.session_state.page == "Verification":
             st.rerun()
         st.stop()
 
-    if st.button(
-        "Retour à mes justificatifs",
-        icon=":material/arrow_back:",
-        type="primary",
-        key="verification_back_to_documents_top",
-    ):
-        st.session_state.page = "Extraction"
-        st.rerun()
+    statement_count = len(_bank_statements(client_docs))
+    back_column, statement_column = st.columns(2)
+    with back_column:
+        if st.button(
+            "Retour à mes justificatifs",
+            icon=":material/arrow_back:",
+            width="stretch",
+            key="verification_back_to_documents_top",
+        ):
+            st.session_state.page = "Extraction"
+            st.rerun()
+    with statement_column:
+        if statement_count < MAX_BANK_STATEMENTS:
+            if st.button(
+                f"Ajouter un relevé ({statement_count}/{MAX_BANK_STATEMENTS})",
+                icon=":material/note_add:",
+                type="primary",
+                width="stretch",
+                key="verification_add_statement",
+            ):
+                _request_additional_statement()
+        else:
+            st.success("3 relevés bancaires enregistrés")
 
     st.title("Vérifier mes informations")
     st.caption(
