@@ -120,7 +120,8 @@ def inject_app_styles():
             padding-top: 2rem;
             padding-bottom: 3rem;
         }
-        .st-key-assistant_dock {
+        .st-key-assistant_dock,
+        .st-key-assistant_dock_expanded {
             position: fixed;
             right: 1.25rem;
             bottom: 1.25rem;
@@ -132,11 +133,18 @@ def inject_app_styles():
             overflow: hidden;
             box-shadow: 0 22px 65px rgba(7, 59, 44, 0.24);
         }
+        .st-key-assistant_dock_expanded {
+            width: min(820px, calc(100vw - 2.5rem));
+            max-height: min(900px, calc(100vh - 2.5rem));
+        }
         .st-key-assistant_dock > div,
-        .st-key-assistant_dock [data-testid="stVerticalBlockBorderWrapper"] {
+        .st-key-assistant_dock_expanded > div,
+        .st-key-assistant_dock [data-testid="stVerticalBlockBorderWrapper"],
+        .st-key-assistant_dock_expanded [data-testid="stVerticalBlockBorderWrapper"] {
             min-width: 0;
         }
-        .st-key-assistant_dock [data-testid="stVerticalBlockBorderWrapper"] {
+        .st-key-assistant_dock [data-testid="stVerticalBlockBorderWrapper"],
+        .st-key-assistant_dock_expanded [data-testid="stVerticalBlockBorderWrapper"] {
             overflow: hidden;
             background: #edf7f2;
             border: 1px solid rgba(0, 122, 77, .18);
@@ -174,10 +182,22 @@ def inject_app_styles():
             font-size: 1.35rem;
             line-height: 1;
         }
-        .st-key-assistant_dock [data-testid="stChatMessage"] {
+        .st-key-assistant_resize button {
+            width: 2.55rem;
+            min-width: 2.55rem;
+            height: 2.55rem;
+            min-height: 2.55rem;
+            padding: 0;
+            border-radius: 999px;
+            font-size: 1.15rem;
+            line-height: 1;
+        }
+        .st-key-assistant_dock [data-testid="stChatMessage"],
+        .st-key-assistant_dock_expanded [data-testid="stChatMessage"] {
             padding-block: .7rem;
         }
-        .st-key-assistant_dock [data-testid="stChatInput"] {
+        .st-key-assistant_dock [data-testid="stChatInput"],
+        .st-key-assistant_dock_expanded [data-testid="stChatInput"] {
             border-radius: 1rem;
         }
         .st-key-journey_step button {
@@ -188,7 +208,8 @@ def inject_app_styles():
                 min-width: min(330px, 88vw);
                 max-width: min(330px, 88vw);
             }
-            .st-key-assistant_dock {
+            .st-key-assistant_dock,
+            .st-key-assistant_dock_expanded {
                 right: .65rem;
                 left: .65rem;
                 bottom: .65rem;
@@ -1442,4 +1463,3 @@ def inject_app_styles():
         """,
         unsafe_allow_html=True,
     )
-

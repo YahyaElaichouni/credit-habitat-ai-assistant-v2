@@ -33,7 +33,7 @@ from database.customer_accounts import (
     authenticate, create_customer, delete_document,
     load_documents, load_project, save_document, save_project,
 )
-from ui.document_review import render_document_review
+from ui.document_review import render_declared_form, render_document_review
 from ui.simulation import render_simulation
 from ui.borrowing_capacity import render_borrowing_capacity
 from copy import deepcopy
@@ -1507,6 +1507,27 @@ elif st.session_state.page == "Extraction":
     # -----------------------------------------------------
     
     declared_data = {}
+    if document_type in {"bulletin", "releve", "compromis"}:
+        with st.expander(
+            "Contrôler les écarts avec mes informations",
+            icon=":material/compare_arrows:",
+        ):
+            st.caption(
+                "Facultatif : indiquez les montants que vous connaissez. "
+                "Après l'analyse, un écart supérieur à "
+                f"{settings.discrepancy_threshold:.0%} sera signalé."
+            )
+            declaration_context = (
+                f"releve_{statement_count}"
+                if document_type == "releve"
+                else document_type
+            )
+            declared_data = render_declared_form(
+                document_type,
+                st.session_state.current_client_id,
+                key_suffix=declaration_context,
+            )
+
     with st.container():
         is_identity = document_type == "carte_identite"
         identity_mode = None
