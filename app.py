@@ -1086,13 +1086,6 @@ if st.session_state.page != "Conseiller":
 # =========================================================
 
 if st.session_state.page == "Conseiller":
-    if st.button(
-        "Retour à l'espace client",
-        icon=":material/arrow_back:",
-        key="advisor_back_to_client",
-    ):
-        st.session_state.page = "Accueil"
-        st.rerun()
     render_advisor_sidebar()
     render_advisor_dashboard()
 
