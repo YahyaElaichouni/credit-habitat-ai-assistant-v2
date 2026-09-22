@@ -29,6 +29,8 @@ EMPTY_PROFILE = {
     "apport_personnel": None,
     "prix_bien": None,
     "duree_souhaitee_annees": None,
+    "montant_financement_souhaite": None,
+    "taux_annuel_indicatif": None,
 }
 
 
@@ -43,6 +45,8 @@ FIELD_LABELS = {
     "apport_personnel": "apport personnel",
     "prix_bien": "prix du bien",
     "duree_souhaitee_annees": "durée souhaitée",
+    "montant_financement_souhaite": "montant à financer",
+    "taux_annuel_indicatif": "taux annuel indicatif",
 }
 
 
@@ -101,6 +105,27 @@ class GuidanceAgent:
 
         current_profile = self.normalize_profile(profile)
         expected_field = self.next_missing_field(current_profile)
+        simulation_updates = self._extract_simulation_follow_up(
+            message,
+            conversation_history or [],
+        )
+        if simulation_updates:
+            updates = self._validate_updates(simulation_updates)
+            updated_profile = deepcopy(current_profile)
+            updated_profile.update(updates)
+            return {
+                "mode": "simulation",
+                "answer": self._build_simulation_answer(updates),
+                "in_scope": True,
+                "sources": [],
+                "passages": [],
+                "profile": updated_profile,
+                "profile_updates": updates,
+                "missing_fields": self.missing_fields(updated_profile),
+                "next_field": expected_field,
+                "profile_complete": expected_field is None,
+            }
+
         extraction = self._extract_with_llm(
             message=message,
             profile=current_profile,
@@ -173,6 +198,67 @@ class GuidanceAgent:
                 return field
         return None
 
+    @staticmethod
+    def _extract_simulation_follow_up(
+        message: str,
+        conversation_history: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Lire une réponse durée/montant/taux demandée par le RAG."""
+        if not conversation_history:
+            return {}
+
+        previous = conversation_history[-1]
+        if not isinstance(previous, dict):
+            return {}
+        previous_answer = str(
+            previous.get("answer")
+            or (
+                previous.get("content")
+                if previous.get("role") == "assistant"
+                else ""
+            )
+            or ""
+        ).lower()
+        required_markers = (
+            "durée du prêt",
+            "montant du financement",
+            "taux d'intérêt",
+        )
+        if not all(marker in previous_answer for marker in required_markers):
+            return {}
+
+        compact_message = message.replace(" ", "")
+        raw_numbers = re.findall(r"\d+(?:\.\d+)?", compact_message)
+        if (
+            len(raw_numbers) == 4
+            and re.search(r",\d+\s*$", message)
+        ):
+            raw_numbers = [
+                raw_numbers[0],
+                raw_numbers[1],
+                f"{raw_numbers[2]}.{raw_numbers[3]}",
+            ]
+        if len(raw_numbers) < 3:
+            return {}
+
+        try:
+            duration = int(float(raw_numbers[0].replace(",", ".")))
+            financing = float(raw_numbers[1].replace(",", "."))
+            annual_rate = float(raw_numbers[2].replace(",", "."))
+        except ValueError:
+            return {}
+
+        if not 5 <= duration <= 30:
+            return {}
+        if financing <= 0 or not 0 <= annual_rate <= 20:
+            return {}
+
+        return {
+            "duree_souhaitee_annees": duration,
+            "montant_financement_souhaite": financing,
+            "taux_annuel_indicatif": annual_rate,
+        }
+
     def _extract_with_llm(
         self,
         message: str,
@@ -198,7 +284,9 @@ Retourne uniquement un objet JSON avec cette structure :
     "charges_mensuelles": null ou nombre,
     "apport_personnel": null ou nombre,
     "prix_bien": null ou nombre,
-    "duree_souhaitee_annees": null ou entier
+    "duree_souhaitee_annees": null ou entier,
+    "montant_financement_souhaite": null ou nombre,
+    "taux_annuel_indicatif": null ou nombre
   }}
 }}
 
@@ -323,6 +411,8 @@ Historique récent : {json.dumps(recent_history, ensure_ascii=False)}
             "apport_personnel",
             "prix_bien",
             "duree_souhaitee_annees",
+            "montant_financement_souhaite",
+            "taux_annuel_indicatif",
         }
         for field in EMPTY_PROFILE:
             value = updates.get(field)
@@ -402,6 +492,34 @@ Historique récent : {json.dumps(recent_history, ensure_ascii=False)}
         return "\n\n".join(parts)
 
     @staticmethod
+    def _build_simulation_answer(updates: Dict[str, Any]) -> str:
+        capital = float(updates["montant_financement_souhaite"])
+        years = int(updates["duree_souhaitee_annees"])
+        annual_rate = float(updates["taux_annuel_indicatif"])
+        months = years * 12
+        monthly_rate = annual_rate / 1200
+        if monthly_rate == 0:
+            payment = capital / months
+        else:
+            payment = (
+                capital
+                * monthly_rate
+                / (1 - (1 + monthly_rate) ** -months)
+            )
+
+        capital_text = f"{capital:,.0f}".replace(",", " ")
+        payment_text = f"{payment:,.2f}".replace(",", " ")
+        rate_text = str(annual_rate).replace(".", ",")
+        return (
+            "Merci, j’ai bien noté : "
+            f"durée du crédit : {years} ans, montant à financer : "
+            f"{capital_text} MAD et taux annuel indicatif : {rate_text} %.\n\n"
+            f"La mensualité estimée est d’environ {payment_text} MAD par mois, "
+            "hors assurance et frais. Cette estimation est indicative et "
+            "non contractuelle."
+        )
+
+    @staticmethod
     def _display_value(field: str, value: Any) -> str:
         if field in {
             "revenu_mensuel_net",
@@ -409,8 +527,11 @@ Historique récent : {json.dumps(recent_history, ensure_ascii=False)}
             "charges_mensuelles",
             "apport_personnel",
             "prix_bien",
+            "montant_financement_souhaite",
         }:
             return f"{float(value):,.0f} MAD".replace(",", " ")
+        if field == "taux_annuel_indicatif":
+            return f"{float(value):g} %"
         if field in {"anciennete_annees", "duree_souhaitee_annees"}:
             return f"{int(value)} ans"
         return str(value)
