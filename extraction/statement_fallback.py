@@ -7,7 +7,7 @@ import unicodedata
 import calendar
 from collections import Counter
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 STATEMENT_TARGET_FIELDS = (

@@ -14,7 +14,6 @@ Interface de démonstration permettant de tester :
 Tous les appels passent par Orchestrator afin de conserver
 un point d'entrée unique cohérent avec l'architecture du projet.
 """
-from ocr.scan_quality import analyze_document_quality
 import html
 import logging
 import uuid
@@ -31,23 +30,21 @@ load_dotenv()
 from config.settings import settings
 from database import audit
 from database.customer_accounts import (
-    authenticate, create_customer, delete_all_documents, delete_document,
+    authenticate, create_customer, delete_document,
     load_documents, load_project, save_document, save_project,
 )
-from extraction.schema import DOCUMENT_SCHEMAS
-from ui.document_review import render_document_review
+from ui.document_review import render_declared_form, render_document_review
 from ui.simulation import render_simulation
 from ui.borrowing_capacity import render_borrowing_capacity
 from copy import deepcopy
 from ui.client_summary import (
-    build_client_summary, render_client_summary, render_final_verification,
+    build_client_summary, render_final_verification,
 )
 from ui.session_state import initialize_session_state
 from ui.home_components import image_to_data_url, render_home_assurance_strip
-from ui.assistant_dock import apply_assistant_result, render_assistant_dock
+from ui.assistant_dock import render_assistant_dock
 from utils.document_processing import (
     count_pdf_pages,
-    get_orchestrator,
     process_document_with_progress,
     request_document_analysis,
     save_document_files,
@@ -71,17 +68,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# =========================================================
-# CACHE
-# =========================================================
-
-@st.cache_data(show_spinner=False)
-def get_document_quality(file_content: bytes, filename: str):
-    """Éviter de recalculer la qualité à chaque rerun Streamlit."""
-    return analyze_document_quality(
-        content=file_content,
-        filename=filename,
-    )
 # =========================================================
 # DESIGN - STYLES AMÉLIORÉS
 # =========================================================
@@ -477,7 +463,7 @@ def render_header():
     )
 
 
-def render_cam_hero(eyebrow, title, text, badge):
+def render_cam_hero(eyebrow, title, text):
     """Afficher l'accueil principal et l'avancement réel du dossier."""
     account_ready = bool(st.session_state.account_created)
     project_ready = False
@@ -1000,74 +986,6 @@ def _remove_uploaded_files(paths):
     return failures
 
 
-def _clear_document_session(documents):
-    """Retire l'état lié aux justificatifs sans déconnecter le client."""
-    document_ids = tuple(documents)
-    client_id = st.session_state.current_client_id
-    for key in list(st.session_state):
-        key_text = str(key)
-        if any(document_id in key_text for document_id in document_ids):
-            st.session_state.pop(key, None)
-        elif key_text.startswith(f"declared_{client_id}_"):
-            st.session_state.pop(key, None)
-        elif key_text.startswith((f"verification_table_{client_id}",
-                                  f"verification_checked_{client_id}")):
-            st.session_state.pop(key, None)
-    for key, default in (
-        ("current_doc_id", None),
-        ("confirmed_fields", {}),
-        ("last_result", None),
-    ):
-        st.session_state[key] = default
-
-
-@st.dialog("Recommencer avec de nouveaux justificatifs")
-def reset_documents_dialog():
-    """Demande une confirmation avant la réinitialisation du dossier documentaire."""
-    documents = current_client_documents()
-    st.warning(
-        "Cette action supprimera tous vos justificatifs ainsi que les informations "
-        "extraites, corrigées et confirmées à partir de ces documents."
-    )
-    st.info("Votre compte client et les informations de votre projet immobilier seront conservés.")
-    confirmed = st.checkbox(
-        "Je comprends que les justificatifs devront être déposés et vérifiés de nouveau",
-        key="confirm_reset_all_documents",
-    )
-    if st.button(
-        "Supprimer les justificatifs",
-        icon=":material/delete_sweep:",
-        type="primary",
-        width="stretch",
-        disabled=not confirmed,
-        key="reset_all_documents_confirm",
-    ):
-        try:
-            stored_paths = delete_all_documents(st.session_state.current_client_id)
-        except Exception as exc:
-            st.error(f"Réinitialisation impossible : {exc}")
-            return
-        session_paths = [document.get("document_path") for document in documents.values()]
-        failures = _remove_uploaded_files(stored_paths + session_paths)
-        _clear_document_session(documents)
-        st.session_state.compromis_skipped = False
-        st.session_state.additional_statement_mode = False
-        for document_id in documents:
-            st.session_state.documents.pop(document_id, None)
-        audit.log_event(
-            "client_documents_reset",
-            advisor_id=f"client_portal_{st.session_state.session_id[:8]}",
-            session_id=st.session_state.session_id,
-            decision="confirme_par_client",
-            details={"documents_supprimes": len(documents), "fichiers_non_supprimes": failures},
-        )
-        st.session_state.documents_reset_notice = (
-            "Vos anciens justificatifs et leurs informations ont été supprimés. "
-            "Vous pouvez déposer les nouveaux documents."
-        )
-        st.rerun()
-
-
 @st.dialog("Supprimer ce justificatif")
 def delete_one_document_dialog(document_id):
     document = st.session_state.documents.get(document_id)
@@ -1119,103 +1037,6 @@ def delete_one_document_dialog(document_id):
         st.rerun()
 
 
-def _confirmed_candidates(documents, field):
-    candidates = []
-    for document_id, document in documents.items():
-        record = (document.get("confirmed_fields") or {}).get(field)
-        if not isinstance(record, dict):
-            continue
-        if record.get("document_id") != document_id:
-            continue
-        if record.get("status") not in ("confirme", "corrige"):
-            continue
-        if record.get("value") is None:
-            continue
-        candidates.append({
-            "document_id": document_id,
-            "filename": document.get("filename") or "Document",
-            "value": record["value"],
-            "record": record,
-        })
-    return candidates
-
-
-def render_conflict_resolution(documents, rows, advisor_id):
-    """Laisse le client choisir explicitement la source à conserver."""
-    conflicts = [row for row in rows if row.get("Statut") == "Conflit"]
-    if not conflicts:
-        return
-    st.subheader("Résoudre les informations contradictoires")
-    st.warning(
-        "Deux justificatifs contiennent des valeurs différentes. Choisissez la valeur "
-        "qui correspond à votre situation actuelle après consultation des documents."
-    )
-    for row in conflicts:
-        field = row["field"]
-        candidates = _confirmed_candidates(documents, field)
-        if len(candidates) < 2:
-            continue
-        with st.container(border=True):
-            st.markdown(f"**{row['Champ']}**")
-            st.dataframe(
-                [{
-                    "Valeur": str(candidate["value"]),
-                    "Justificatif": candidate["filename"],
-                    "Page": str((candidate["record"].get("source") or {}).get("page") or "—"),
-                    "Extrait": str((candidate["record"].get("source") or {}).get("quote") or "—"),
-                } for candidate in candidates],
-                hide_index=True,
-                width="stretch",
-            )
-            choice = st.selectbox(
-                "Valeur à conserver",
-                options=range(len(candidates)),
-                format_func=lambda index: (
-                    f"{candidates[index]['value']} — {candidates[index]['filename']}"
-                ),
-                key=f"conflict_choice_{field}",
-            )
-            checked = st.checkbox(
-                "J'ai comparé les justificatifs et je confirme ce choix",
-                key=f"conflict_checked_{field}",
-            )
-            if st.button(
-                "Conserver cette valeur",
-                icon=":material/check_circle:",
-                type="primary",
-                disabled=not checked,
-                key=f"resolve_conflict_{field}",
-            ):
-                selected = candidates[choice]
-                discarded = []
-                for candidate in candidates:
-                    if candidate["document_id"] == selected["document_id"]:
-                        continue
-                    document = documents[candidate["document_id"]]
-                    (document.get("confirmed_fields") or {}).pop(field, None)
-                    save_document(
-                        st.session_state.current_client_id,
-                        candidate["document_id"],
-                        document,
-                    )
-                    discarded.append({
-                        "document": candidate["filename"],
-                        "value": candidate["value"],
-                    })
-                audit.log_event(
-                    "client_conflict_resolved",
-                    advisor_id=advisor_id,
-                    session_id=st.session_state.session_id,
-                    document_path=selected["filename"],
-                    field_name=field,
-                    value=selected["value"],
-                    decision="valeur_conservee_par_client",
-                    details={"valeurs_ecartees": discarded},
-                )
-                st.toast("Conflit résolu et choix sauvegardé.", icon=":material/check_circle:")
-                st.rerun()
-
-
 def dossier_readiness():
     """État métier réel utilisé pour verrouiller/déverrouiller la simulation."""
     documents = current_client_documents()
@@ -1230,196 +1051,6 @@ def dossier_readiness():
     missing.extend(label for doc_type, label in required_documents.items()
                    if doc_type not in available_types)
     return documents, rows, business_complete and not missing, missing
-
-
-def render_application_sidebar():
-    """Navigation bancaire courte, guidée et compréhensible sans jargon."""
-    account_ready = bool(st.session_state.account_created)
-    documents = current_client_documents() if account_ready else {}
-    completed_types = {
-        document.get("type") for document in documents.values()
-        if document.get("status") == "completed"
-    }
-    missing_document_count = len(
-        {"carte_identite", "bulletin", "releve"} - completed_types
-    )
-    required_types = {"carte_identite", "bulletin", "releve"}
-    documents_ready = required_types.issubset(reviewed_document_types(documents))
-
-    saved_project = {}
-    if account_ready:
-        try:
-            saved_project = load_project(st.session_state.current_client_id) or {}
-        except Exception:
-            saved_project = {}
-    project_ready = bool(saved_project)
-
-    dossier_complete = False
-    if account_ready:
-        _, _, dossier_complete, _ = dossier_readiness()
-    completed_steps = sum((project_ready, documents_ready, dossier_complete, dossier_complete))
-    progress_percent = int(completed_steps / 4 * 100)
-
-    logo = Path("assets/logo_ca.jpg")
-    with st.container(key="sidebar_brand"):
-        logo_column, title_column = st.columns([1, 2.8], vertical_alignment="center")
-        with logo_column:
-            if logo.is_file():
-                st.image(str(logo), width=58)
-            else:
-                st.markdown(":material/account_balance:")
-        with title_column:
-            st.markdown("**Crédit Agricole  \\\ndu Maroc**")
-
-    with st.container(key="sidebar_intro"):
-        st.markdown("## Crédit Habitat")
-        st.caption("Votre projet, étape par étape")
-
-    with st.container(key="sidebar_progress"):
-        if not account_ready:
-            next_step = "Connectez-vous pour préparer votre dossier."
-        elif not project_ready:
-            next_step = "Prochaine étape : renseigner votre projet."
-        elif not documents_ready:
-            next_step = "Prochaine étape : ajouter vos justificatifs."
-        elif not dossier_complete:
-            next_step = "Prochaine étape : vérifier vos informations."
-        else:
-            next_step = "Votre simulation est prête."
-        st.markdown(
-            f"""
-            <div class="sidebar-progress-head">
-                <span>Avancement du dossier</span>
-                <span>{progress_percent} %</span>
-            </div>
-            <div class="sidebar-progress-track">
-                <div class="sidebar-progress-fill" style="width:{progress_percent}%"></div>
-            </div>
-            <div class="sidebar-progress-copy">{next_step}</div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown('<div class="sidebar-section-label">VOTRE PARCOURS</div>', unsafe_allow_html=True)
-    with st.container(key="sidebar_nav"):
-        if st.button(
-            "01  Mon projet",
-            icon=":material/home:",
-            width="stretch",
-            type="primary" if st.session_state.page == "Accueil" else "secondary",
-            disabled=st.session_state.processing,
-            key="sidebar_overview",
-        ):
-            _go_to("Accueil")
-            st.rerun()
-
-        
-
-        if st.button(
-            "02  Mes justificatifs", icon=":material/description:", width="stretch",
-            type="primary" if st.session_state.page == "Extraction" else "secondary",
-            disabled=st.session_state.processing or not account_ready,
-            key="sidebar_documents",
-        ):
-            _go_to("Extraction")
-            st.rerun()
-        if missing_document_count:
-            documents_hint = f"{missing_document_count} document{'s' if missing_document_count > 1 else ''} à ajouter"
-        elif documents_ready:
-            documents_hint = "Documents enregistrés"
-        else:
-            documents_hint = "Documents à compléter"
-        st.markdown(f'<div class="sidebar-step-hint">{documents_hint}</div>', unsafe_allow_html=True)
-
-        if st.button(
-            "03  Vérifier mes informations", icon=":material/fact_check:", width="stretch",
-            type="primary" if st.session_state.page == "Verification" else "secondary",
-            disabled=st.session_state.processing or not documents_ready,
-            key="sidebar_verification",
-        ):
-            _go_to("Verification")
-            st.rerun()
-        verification_hint = "Terminé" if dossier_complete else (
-            "Prêt à vérifier" if documents_ready else "Disponible après les documents"
-        )
-        st.markdown(f'<div class="sidebar-step-hint">{verification_hint}</div>', unsafe_allow_html=True)
-
-        if st.button(
-            "04  Ma simulation", icon=":material/calculate:", width="stretch",
-            type="primary" if st.session_state.page == "Simulation" else "secondary",
-            disabled=st.session_state.processing or not dossier_complete,
-            key="sidebar_simulation",
-        ):
-            _go_to("Simulation")
-            st.rerun()
-        simulation_hint = "Disponible" if dossier_complete else "Disponible après vérification"
-        st.markdown(f'<div class="sidebar-step-hint">{simulation_hint}</div>', unsafe_allow_html=True)
-
-    if st.button(
-        "Estimation rapide",
-        key="sidebar_quick",
-        width="stretch",
-        icon=":material/calculate:",
-        disabled=st.session_state.processing,
-    ):
-        _go_to("Estimation")
-        st.rerun()
-
-    with st.container(key="sidebar_support"):
-        if st.button(
-            "Une question ? Demandez à Nour",
-            icon=":material/help:",
-            width="stretch",
-            key="sidebar_help",
-        ):
-            st.session_state.assistant_open = True
-            st.rerun()
-        with st.expander("Confidentialité", icon=":material/shield:"):
-            st.caption("Vos justificatifs servent uniquement à préparer votre simulation.")
-            st.caption("Vous gardez le contrôle sur les informations enregistrées.")
-        if st.button(
-            "Espace conseiller",
-            icon=":material/admin_panel_settings:",
-            width="stretch",
-            key="open_advisor_space",
-        ):
-            st.session_state.page = "Conseiller"
-            st.rerun()
-    if account_ready:
-        profile = st.session_state.customer_profile
-        display_name = " ".join(filter(None, (profile.get("prenom"), profile.get("nom")))).strip()
-        initials = "".join(part[:1].upper() for part in display_name.split()[:2]) or "CL"
-        safe_display_name = html.escape(display_name or "Mon compte")
-        safe_email = html.escape(str(profile.get("email", "")))
-        with st.container(key="sidebar_profile"):
-            st.markdown(
-                f"""
-                <div class="sidebar-user-card">
-                    <div class="sidebar-user-name">{initials} · {safe_display_name}</div>
-                    <div class="sidebar-user-email">{safe_email}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            logout = st.button(
-                "Se déconnecter",
-                icon=":material/logout:",
-                width="stretch",
-                key="sidebar_logout",
-            )
-            if logout:
-                for key in (
-                    "documents", "current_doc_id", "confirmed_fields", "last_result",
-                    "chat_history", "credit_profile", "customer_profile",
-                    "compromis_skipped", "additional_statement_mode",
-                ):
-                    st.session_state.pop(key, None)
-                st.session_state.account_created = False
-                st.session_state.current_client_id = None
-                st.session_state.page = "Accueil"
-                st.rerun()
-
-
 
 
 initialize_session_state()
@@ -1455,13 +1086,6 @@ if st.session_state.page != "Conseiller":
 # =========================================================
 
 if st.session_state.page == "Conseiller":
-    if st.button(
-        "Retour à l'espace client",
-        icon=":material/arrow_back:",
-        key="advisor_back_to_client",
-    ):
-        st.session_state.page = "Accueil"
-        st.rerun()
     render_advisor_sidebar()
     render_advisor_dashboard()
 
@@ -1473,7 +1097,6 @@ elif st.session_state.page == "Accueil":
             "Créez votre espace personnel pour sauvegarder vos justificatifs, "
             "reprendre votre parcours à tout moment et affiner votre simulation "
             "en toute autonomie.",
-            "Données protégées · Validation par vos soins",
         )
         render_home_assurance_strip()
         st.stop()
@@ -1483,7 +1106,7 @@ elif st.session_state.page == "Accueil":
     required_types = {"carte_identite", "bulletin", "releve"}
     completed_required = len(required_types & completed_types)
     documents_ready = required_types.issubset(reviewed_document_types(client_docs))
-    _, summary_rows, dossier_complete, missing_items = dossier_readiness()
+    _, _, dossier_complete, _ = dossier_readiness()
     saved_project = (
         load_project(st.session_state.current_client_id)
         or st.session_state.get("quick_project", {})
@@ -1495,27 +1118,23 @@ elif st.session_state.page == "Accueil":
             "Vos justificatifs et vos informations essentielles sont vérifiés. "
             "Vous pouvez maintenant comparer plusieurs scénarios de financement."
         )
-        hero_badge = "DOSSIER COMPLET · INFORMATIONS VÉRIFIÉES"
     elif completed_required:
         hero_title = "Reprenez votre projet là où vous l’avez laissé."
         hero_text = (
             "Votre dossier est sauvegardé. Finalisez les justificatifs et vérifiez "
             "les informations détectées avant de lancer la simulation."
         )
-        hero_badge = f"{completed_required}/3 JUSTIFICATIFS TRAITÉS"
     else:
         hero_title = "Construisez votre projet immobilier en toute simplicité."
         hero_text = (
             "Déposez vos justificatifs, contrôlez les informations détectées et "
             "obtenez une estimation personnalisée de votre financement."
         )
-        hero_badge = "PARCOURS SÉCURISÉ · VALIDATION PAR LE CLIENT"
 
     render_cam_hero(
         "Crédit habitat · Espace personnel",
         hero_title,
         hero_text,
-        hero_badge,
     )
     render_home_assurance_strip()
 
@@ -1881,6 +1500,27 @@ elif st.session_state.page == "Extraction":
     # -----------------------------------------------------
     
     declared_data = {}
+    if document_type in {"bulletin", "releve", "compromis"}:
+        with st.expander(
+            "Contrôler les écarts avec mes informations",
+            icon=":material/compare_arrows:",
+        ):
+            st.caption(
+                "Facultatif : indiquez les montants que vous connaissez. "
+                "Après l'analyse, un écart supérieur à "
+                f"{settings.discrepancy_threshold:.0%} sera signalé."
+            )
+            declaration_context = (
+                f"releve_{statement_count}"
+                if document_type == "releve"
+                else document_type
+            )
+            declared_data = render_declared_form(
+                document_type,
+                st.session_state.current_client_id,
+                key_suffix=declaration_context,
+            )
+
     with st.container():
         is_identity = document_type == "carte_identite"
         identity_mode = None
@@ -2287,11 +1927,8 @@ elif st.session_state.page == "Simulation":
     "Ma capacité d'emprunt",
 ])
 
-    estimate = None
-    capacity = None
-
     with simulation_tab:
-         estimate = render_simulation(
+         render_simulation(
         project=saved_project,
         key_prefix=(
             f"simulation_"
@@ -2302,7 +1939,7 @@ elif st.session_state.page == "Simulation":
     )
 
     with capacity_tab:
-         capacity = render_borrowing_capacity(
+         render_borrowing_capacity(
         project=saved_project,
         key_prefix=(
             f"capacity_"
@@ -2331,155 +1968,6 @@ elif st.session_state.page == "Simulation":
 # =========================================================
 # PAGE ASSISTANT AMÉLIORÉE
 # =========================================================
-
-elif st.session_state.page == "Assistant":
-    st.title("Comprendre mon crédit habitat")
-    
-    st.caption(
-        "Posez une question sur les offres, les conditions et la préparation de votre projet."
-    )
-    
-    # Actions rapides
-    col_new, _ = st.columns([1, 3])
-    with col_new:
-        if st.button("🆕 Nouvelle conversation", width="stretch"):
-            st.session_state.chat_history = []
-            st.session_state.credit_profile = {}
-            st.rerun()
-    
-    st.divider()
-    
-    # -----------------------------------------------------
-    # QUESTIONS RAPIDES
-    # -----------------------------------------------------
-    
-    st.caption("⚡ Questions rapides")
-    
-    quick_1, quick_2, quick_3 = st.columns(3)
-    quick_question = None
-    
-    with quick_1:
-        if st.button(
-            "📋 Conditions d'éligibilité",
-            width="stretch",
-            help="Quelles sont les conditions d'éligibilité au crédit habitat ?"
-        ):
-            quick_question = "Quelles sont les conditions d'éligibilité au crédit habitat ?"
-    
-    with quick_2:
-        if st.button(
-            "📎 Documents nécessaires",
-            width="stretch",
-            help="Quels documents sont nécessaires pour constituer un dossier de crédit habitat ?"
-        ):
-            quick_question = "Quels documents sont nécessaires pour constituer un dossier de crédit habitat ?"
-    
-    with quick_3:
-        if st.button(
-            "💰 Taux du crédit",
-            width="stretch",
-            help="Quel est le taux d'intérêt du crédit habitat ?"
-        ):
-            quick_question = "Quel est le taux d'intérêt du crédit habitat ?"
-    
-    st.write("")
-    
-    # -----------------------------------------------------
-    # HISTORIQUE
-    # -----------------------------------------------------
-    
-    for exchange in st.session_state.chat_history:
-        with st.chat_message("user"):
-            st.write(exchange["question"])
-        
-        with st.chat_message("assistant"):
-            if exchange.get("mode") == "guidance":
-                st.badge(
-                    "Accompagnement personnalisé",
-                    color="green",
-                    icon=":material/account_circle:",
-                )
-                st.write(exchange["answer"])
-            elif exchange.get("in_scope", False):
-                st.badge("Réponse documentée", color="green", icon=":material/library_books:")
-                st.write(exchange["answer"])
-                
-                if exchange.get("sources"):
-                    with st.expander("📖 Sources utilisées"):
-                        for source in exchange["sources"]:
-                            st.write(f"• {source}")
-            else:
-                st.badge("Question hors périmètre", color="orange")
-                st.warning(exchange["answer"])
-    
-    # -----------------------------------------------------
-    # QUESTION
-    # -----------------------------------------------------
-    
-    question = st.chat_input("💬 Posez votre question...")
-    
-    if quick_question:
-        question = quick_question
-    
-    # -----------------------------------------------------
-    # EXECUTION
-    # -----------------------------------------------------
-    
-    if question:
-        with st.chat_message("user"):
-            st.write(question)
-        
-        with st.chat_message("assistant"):
-            with st.spinner("🔍 Recherche dans la documentation..."):
-                try:
-                    chat_result = get_orchestrator().handle_question(
-                        question=question,
-                        advisor_id=advisor_id,
-                        session_id=st.session_state.session_id,
-                        profile=st.session_state.credit_profile,
-                        conversation_history=st.session_state.chat_history,
-                    )
-                except FileNotFoundError:
-                    st.error(
-                        "❌ Le vectorstore RAG n'existe pas encore. "
-                        "Lancez `python -m rag.ingest` après avoir ajouté les documents dans `data/docs/`."
-                    )
-                    st.stop()
-                except Exception as e:
-                    st.error(f"❌ Erreur lors du traitement : {str(e)}")
-                    st.stop()
-            
-            if chat_result.get("mode") == "guidance":
-                st.badge(
-                    "Accompagnement personnalisé",
-                    color="green",
-                    icon=":material/account_circle:",
-                )
-                st.write(chat_result["answer"])
-            elif chat_result.get("in_scope", False):
-                st.badge("Réponse documentée", color="green", icon=":material/library_books:")
-                st.write(chat_result["answer"])
-                
-                if chat_result.get("sources"):
-                    with st.expander("📖 Sources utilisées"):
-                        for source in chat_result["sources"]:
-                            st.write(f"• {source}")
-            else:
-                st.badge("Question hors périmètre", color="orange")
-                st.warning(chat_result["answer"])
-        
-        # Ajouter à l'historique
-        apply_assistant_result(chat_result)
-        st.session_state.chat_history.append({
-            "question": question,
-            "answer": chat_result["answer"],
-            "in_scope": chat_result.get("in_scope", False),
-            "sources": chat_result.get("sources", []),
-            "mode": chat_result.get("mode", "rag"),
-            "profile_updates": chat_result.get("profile_updates", {}),
-        })
-        
-        st.rerun()
 
 # L'assistant est rendu après le contenu mais reste fixé à droite par CSS.
 

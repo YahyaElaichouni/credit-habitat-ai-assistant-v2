@@ -1,6 +1,4 @@
 """Synthèse EB-105 : uniquement les cinq champs métier confirmés."""
-import csv
-import io
 import re
 import statistics
 from datetime import datetime
@@ -10,7 +8,6 @@ import streamlit as st
 from database import audit
 from database.customer_accounts import save_document, save_project
 from extraction.confirmation import make_confirmation
-from extraction.financial_metrics import debt_ratio
 
 
 BUSINESS_FIELDS = {
@@ -170,55 +167,6 @@ def build_client_summary(documents):
         })
     return rows, complete
 
-
-def _csv(rows):
-    buffer = io.StringIO(newline="")
-    public_rows = [{key: value for key, value in row.items() if key != "field"} for row in rows]
-    writer = csv.DictWriter(buffer, fieldnames=list(public_rows[0]))
-    writer.writeheader()
-    writer.writerows(public_rows)
-    return buffer.getvalue().encode("utf-8-sig")
-
-
-def render_client_summary(documents):
-    rows, complete = build_client_summary(documents)
-    st.subheader("Ma situation financière")
-    st.caption("Cette synthèse utilise uniquement les informations que vous avez vérifiées.")
-    values = {row["field"]: row["Valeur confirmée"] for row in rows if row["Statut"] == "Confirmé"}
-    if all(field in values for field in ("salaire_net", "revenus_complementaires", "charge_mensuelle_credits")):
-        total_income = float(values["salaire_net"]) + float(values["revenus_complementaires"])
-        ratio = debt_ratio(total_income, values["charge_mensuelle_credits"])
-        cols = st.columns(3)
-        cols[0].metric("Mes revenus retenus", f"{total_income:,.2f} MAD", border=True)
-        cols[1].metric("Mes charges de crédits", f"{float(values['charge_mensuelle_credits']):,.2f} MAD", border=True)
-        cols[2].metric("Taux d'endettement", f"{ratio:.2%}", border=True)
-        st.caption("Calcul indicatif : charges mensuelles ÷ (revenu net + revenus complémentaires vérifiés).")
-    else:
-        st.info("Vérifiez votre revenu net et vos charges mensuelles pour afficher le taux d'endettement.")
-    if complete:
-        st.success("Les informations indispensables à la simulation sont vérifiées.")
-    else:
-        st.warning("Certaines informations doivent encore être vérifiées ou corrigées.")
-    display_rows = []
-    for row in rows:
-        display = {key: value for key, value in row.items() if key not in ("field", "SHA-256")}
-        display["Valeur confirmée"] = "" if row["Valeur confirmée"] is None else str(row["Valeur confirmée"])
-        display_rows.append(display)
-    st.dataframe(
-        display_rows,
-        hide_index=True, width="stretch",
-    )
-    with st.expander("Traçabilité technique"):
-        st.dataframe(
-            [{"Champ": row["Champ"], "Pièce originale": row["Pièce originale"],
-              "Page": row["Page"], "SHA-256": row["SHA-256"]} for row in rows],
-            hide_index=True, width="stretch",
-        )
-    st.download_button(
-        "Télécharger ma synthèse", _csv(rows),
-        file_name="synthese_dossier_confirmee.csv", mime="text/csv",
-        key="export_client_summary", on_click="ignore",
-    )
 
 FIELD_ORDER = tuple(BUSINESS_FIELDS)
 

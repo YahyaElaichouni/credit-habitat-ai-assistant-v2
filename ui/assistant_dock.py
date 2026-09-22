@@ -61,9 +61,12 @@ def render_assistant_dock(advisor_id):
                 st.rerun()
         return
 
-    with st.container(key="assistant_dock", border=True):
-        avatar_col, title_col, close_col = st.columns(
-            [1.2, 5.6, 1],
+    expanded = bool(st.session_state.get("assistant_expanded"))
+    dock_key = "assistant_dock_expanded" if expanded else "assistant_dock"
+
+    with st.container(key=dock_key, border=True):
+        avatar_col, title_col, expand_col, close_col = st.columns(
+            [1.2, 5.6, 1, 1],
             vertical_alignment="center",
         )
         with avatar_col:
@@ -74,6 +77,19 @@ def render_assistant_dock(advisor_id):
         with title_col:
             st.markdown("**Nour, votre assistant habitat**")
             st.caption("En ligne · Je vous accompagne étape par étape")
+        with expand_col:
+            if st.button(
+                "↙" if expanded else "↗",
+                key="assistant_resize",
+                help=(
+                    "Réduire la conversation"
+                    if expanded
+                    else "Agrandir pour voir toute la conversation"
+                ),
+                width="content",
+            ):
+                st.session_state.assistant_expanded = not expanded
+                st.rerun()
         with close_col:
             if st.button(
                 "×",
@@ -84,7 +100,8 @@ def render_assistant_dock(advisor_id):
                 st.session_state.assistant_open = False
                 st.rerun()
 
-        history = st.session_state.chat_history[-6:]
+        complete_history = st.session_state.chat_history
+        history = complete_history if expanded else complete_history[-6:]
         if not history:
             st.write(
                 "Bonjour ! Je vais vous accompagner étape par étape. "
@@ -107,7 +124,12 @@ def render_assistant_dock(advisor_id):
             suggested_question = suggestions.get(selected)
         else:
             suggested_question = None
-            with st.container(height=320, border=False):
+            if not expanded and len(complete_history) > len(history):
+                st.caption(
+                    f"{len(complete_history) - len(history)} échange(s) précédent(s) "
+                    "— agrandissez Nour pour tout afficher."
+                )
+            with st.container(height=560 if expanded else 320, border=False):
                 for exchange in history:
                     with st.chat_message("user", avatar=":material/person:"):
                         st.write(exchange["question"])
@@ -151,4 +173,3 @@ def render_assistant_dock(advisor_id):
             "profile_updates": answer.get("profile_updates", {}),
         })
         st.rerun()
-
