@@ -1,10 +1,6 @@
 """Interface de revue : l'état de confirmation est propre à chaque document."""
 
 import json
-import re
-import unicodedata
-from collections import defaultdict
-from pathlib import Path
 from typing import get_args
 from ui.document_preview import (
     preferred_source_page,
@@ -14,7 +10,7 @@ import streamlit as st
 
 from database import audit
 from extraction.confirmation import (
-    REQUIRED_FIELDS, DATE_FIELDS, make_confirmation, export_confirmed_csv,
+    REQUIRED_FIELDS, DATE_FIELDS, make_confirmation,
 )
 from extraction.schema import DOCUMENT_SCHEMAS, ExtractedField
 
@@ -23,6 +19,7 @@ LABELS = {
     "employeur": "Nom de l'employeur", "salaire_net": "Revenu mensuel net (MAD)",
     "date_embauche": "Date d'embauche", "charge_mensuelle_credits": "Charges mensuelles de crédits (MAD)",
     "revenus_complementaires": "Revenus complémentaires mensuels (MAD)",
+    "prix_vente": "Prix du bien (MAD)",
 }
 IDENTITY_METADATA_FIELDS = {"identite_ambigue", "noms_non_attribues"}
 REVIEW_FIELDS = {
@@ -36,54 +33,27 @@ REVIEW_FIELDS = {
 }
 
 
-def _normalized_label(value):
-    text = unicodedata.normalize("NFKD", str(value or ""))
-    text = "".join(char for char in text if not unicodedata.combining(char))
-    return re.sub(r"\s+", " ", text).strip().upper()
-
-
-def _observed_recurring_incoming(transactions):
-    """Retourne un total indicatif, jamais une validation automatique."""
-    groups = defaultdict(list)
-    for item in transactions or []:
-        if not isinstance(item, dict) or str(item.get("type") or "").lower() != "credit":
-            continue
-        label = _normalized_label(item.get("description"))
-        if not (label.startswith("VIR-INST DE ") or label.startswith("VIREMENT RECU DE ")):
-            continue
-        if any(word in label for word in ("SALAIRE", "REMBOURSEMENT", "ANNULATION")):
-            continue
-        try:
-            amount = abs(float(item.get("montant")))
-        except (TypeError, ValueError):
-            continue
-        if amount:
-            # Retirer les références numériques variables pour regrouper un même émetteur.
-            group = re.sub(r"\b\d+\b", "", label)
-            groups[re.sub(r"\s+", " ", group).strip()].append(amount)
-    candidates = [values for values in groups.values() if len(values) >= 2]
-    if len(candidates) != 1:
-        return None
-    return round(sum(candidates[0]), 2)
-
-
 def _numeric(document_type, field):
     annotation = DOCUMENT_SCHEMAS[document_type].model_fields[field].annotation
     return (isinstance(annotation, type) and issubclass(annotation, ExtractedField)
             and float in get_args(annotation.model_fields["value"].annotation))
 
 
-def render_declared_form(document_type, client_id):
+def render_declared_form(document_type, client_id, key_suffix=""):
     """Un champ laissé vide n'est pas remplacé par un zéro implicite."""
-    fields = list(REQUIRED_FIELDS[document_type])
-    if document_type == "releve":
-        fields.append("revenus_complementaires")
-    if document_type == "compromis":
-        fields = ["prix_vente", "adresse_bien"]
+    fields = {
+        "bulletin": ("salaire_net",),
+        "releve": (
+            "charge_mensuelle_credits",
+            "revenus_complementaires",
+        ),
+        "compromis": ("prix_vente",),
+    }.get(document_type, ())
     values = {}
     for field in fields:
         label = LABELS.get(field, field.replace("_", " ").capitalize())
-        key = f"declared_{client_id}_{document_type}_{field}"
+        suffix = f"_{key_suffix}" if key_suffix else ""
+        key = f"declared_{client_id}_{document_type}_{field}{suffix}"
         if _numeric(document_type, field):
             value = st.number_input(label, value=None, min_value=0.0, key=key)
         else:
@@ -149,6 +119,26 @@ def render_document_review(
         }
         for name in names
     }
+
+    discrepancies = result.get("validation_result", {}).get("discrepancies", [])
+    evaluated_discrepancies = [
+        discrepancy
+        for discrepancy in discrepancies
+        if discrepancy.get("passed") is not None
+    ]
+    failed_discrepancies = [
+        discrepancy
+        for discrepancy in evaluated_discrepancies
+        if discrepancy.get("passed") is False
+    ]
+    if failed_discrepancies:
+        st.warning("Incohérence détectée entre votre saisie et le document :")
+        for discrepancy in failed_discrepancies:
+            st.markdown(f"- {discrepancy['message']}")
+    elif evaluated_discrepancies:
+        st.success(
+            "Les valeurs déclarées et extraites respectent le seuil d'écart autorisé."
+        )
 
     st.caption(
         "Comparez les informations avec votre justificatif, "
