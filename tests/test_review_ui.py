@@ -65,6 +65,17 @@ st.session_state.values = render_declared_form("releve", "fictif")
     assert app.session_state["values"]["charge_mensuelle_credits"] == 0.0
 
 
+def test_discrepancy_warning_is_visible():
+    app = AppTest.from_string(REVIEW_APP.replace(
+        '"validation_result": {"fields": {',
+        '"validation_result": {"discrepancies": '
+        '[{"rule": "ecart_salaire_net", "passed": False, '
+        '"message": "Écart salaire_net : 20.8 %, seuil 10 %"}], "fields": {',
+    )).run()
+    assert not app.exception
+    assert any("Incohérence détectée" in warning.value for warning in app.warning)
+
+
 def test_missing_extracted_amount_stays_empty():
     app = AppTest.from_string(REVIEW_APP.replace('"value": 6000.0', '"value": None')).run()
     assert not app.exception

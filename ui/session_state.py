@@ -17,6 +17,7 @@ SESSION_DEFAULTS = {
     "processing": False,
     "last_error": None,
     "assistant_open": False,
+    "assistant_expanded": False,
     "account_created": False,
     "customer_profile": {},
     "compromis_skipped": False,
