@@ -152,6 +152,19 @@ def _incoming_description(description):
     return has_transfer and has_received and not has_sent
 
 
+def _outgoing_description(description):
+    """Reconnaît un débit même lorsque EMIS/FAVEUR est déformé par l'OCR."""
+    text = _norm(description)
+    if re.search(OUTGOING_OPERATION_PATTERN, text):
+        return True
+    words = re.findall(r"[a-z]{3,}", text)
+    has_sent = any(_similar_word(word, ("emis",), 0.65) for word in words)
+    has_favour = any(_similar_word(word, ("faveur",), 0.67) for word in words)
+    # « en faveur de » prouve un mouvement sortant sur les relevés CIH,
+    # même si VIREMENT ou EMIS a été partiellement perdu.
+    return has_sent or has_favour
+
+
 def _date(value, default_year=None):
     raw = re.sub(r"\s+", " ", str(value or "")).strip()
     short = re.fullmatch(
@@ -880,7 +893,7 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         verified = quote is not None
         incoming_label = _incoming_description(description)
         column_proven = _has_column_marker(item, "credit")
-        outgoing_label = bool(re.search(OUTGOING_OPERATION_PATTERN, description))
+        outgoing_label = _outgoing_description(description)
         # Un type="credit" produit par le LLM ne constitue pas une preuve
         # suffisante : c'est précisément ce qui transformait « FRAIS PACK
         # ... 80,00 » en revenu sur certains relevés Crédit du Maroc. Il faut
@@ -908,8 +921,10 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
     marked_eligible = [
         item for item in marked_candidates
         if _income_exclusion_reason(item["description"]) is None
-        and _incoming_description(item["description"])
-        and not re.search(OUTGOING_OPERATION_PATTERN, _norm(item["description"]))
+        # Le marqueur CREDIT vient de la géométrie réelle du tableau. Il reste
+        # une preuve suffisante si l'OCR a perdu le mot VIREMENT/RECU, à
+        # condition qu'aucun indice de mouvement sortant ne soit présent.
+        and not _outgoing_description(item["description"])
     ]
     marked_excluded = [
         _evidence_item(item, "exclu", _income_exclusion_reason(item["description"]))

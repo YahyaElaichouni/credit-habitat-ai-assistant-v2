@@ -167,6 +167,14 @@ def render_document_review(
             name.replace("_", " ").capitalize(),
         )
 
+        source = decisions[name].get("source") or {}
+        if (
+            document_type == "releve"
+            and name == "revenus_complementaires"
+            and source.get("regularity_proven") is False
+        ):
+            label = "Entrées complémentaires détectées (MAD) — à confirmer"
+
         values[name] = st.text_input(
             label,
             value=_text_value(value),
@@ -177,8 +185,6 @@ def render_document_review(
                 else None
             ),
         )
-
-        source = decisions[name].get("source") or {}
 
         if source.get("page"):
             st.caption(
@@ -202,6 +208,30 @@ def render_document_review(
 
             if absent:
                 values[name] = "0"
+
+        if name in ("charge_mensuelle_credits", "revenus_complementaires"):
+            evidence = source.get("evidence") or []
+            excluded = source.get("excluded_evidence") or []
+            method = source.get("method")
+            if evidence or excluded or method:
+                with st.expander("Voir le détail du calcul"):
+                    if method:
+                        st.caption(method)
+                    for item in evidence:
+                        amount = item.get("montant")
+                        formatted = f"{float(amount):,.2f}".replace(",", " ")
+                        st.markdown(
+                            f"✅ **{formatted} MAD** — "
+                            f"{item.get('description') or 'Opération créditrice'}"
+                        )
+                    for item in excluded:
+                        amount = item.get("montant")
+                        formatted = f"{float(amount):,.2f}".replace(",", " ")
+                        st.markdown(
+                            f"❌ **{formatted} MAD** — "
+                            f"{item.get('description') or 'Opération exclue'}  \n"
+                            f"Motif : {item.get('reason') or 'opération non éligible'}"
+                        )
 
     preview_column, information_column = st.columns(
         [1, 1.05],
