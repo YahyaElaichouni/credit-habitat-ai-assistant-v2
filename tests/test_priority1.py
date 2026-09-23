@@ -210,6 +210,64 @@ def test_cih_glued_dates_and_received_transfers_are_summed():
     assert "remboursement" in result["source"]["excluded_evidence"][0]["reason"]
 
 
+def test_cih_fragmented_received_transfers_are_all_summed():
+    """Les séparateurs et fautes OCR ne doivent pas supprimer des crédits CIH."""
+    from extraction.financial_metrics import derive_complementary_income
+
+    pages = [{"page": 1, "text": "\n".join([
+        "SOLDE DEPART AU : 31/08/2023 | 45 674,66",
+        "02/0102/80 | VIRENENT | RECU DE ABDELALI CUALAATAD | 500,00",
+        # Virement sortant déformé : il ne doit pas devenir un revenu.
+        "02/0102/80 | VIRENENT | cNI3 | EN FATEUR DE BENEFICIAIRE | :0 026,60",
+        "03/0103/0% | VIREMENT RECU DE MERIEE MOUDAKIR | 250,00",
+        "03/0103/80 | VIRENENT RECU DX LARBI EL JID | 300,00",
+        "03/0103/0% | VIREMENT RECU DE EOUSSAM ZAOUGULA | 520,00",
+        "04/0304/05 | VIRT RECU DE LA PART MUTUELLE | 13 175,79",
+        "05/0905/05 | VIREMENT | RECU DE MOEAMED TARAKI | 4 150,00",
+        "05/0305/09 | RECU | DE | KHADIJA EL FATIEI | 1000.00",
+        "05/01/5/80 | DE KIND CEOUF | 180,00",
+        "08/018/80 | VIRENENT | Do | KIND CEOUF | 88:0,00",
+        "08/03018/0% | VIREMENT | RECU | DE KIND CHOUF | 1 100,00",
+        "09/0109/80 | VIRENENT | RECU | DX KIND CEOUF | 690,00",
+        "10/01:0/80 | VIRENENT | RECU | DX KIND CEOUF | 440,00",
+        "12/0302/0% | VIREMENT RECU | VIREMNT RECU DE EIND CEOEF | 400.00",
+    ])}]
+
+    result = derive_complementary_income([], pages, "cih.png", "sha")
+
+    assert result is not None
+    assert result["value"] == pytest.approx(10410.0)
+    assert len(result["source"]["evidence"]) == 12
+    assert [item["montant"] for item in result["source"]["excluded_evidence"]] == [
+        pytest.approx(13175.79)
+    ]
+    assert all(item["montant"] != pytest.approx(26.6)
+               for item in result["source"]["evidence"])
+
+
+def test_attijari_wrong_column_marker_does_not_hide_received_transfers():
+    """Un faux marqueur CREDIT ne doit ni compter un émis ni masquer les reçus."""
+    from extraction.financial_metrics import derive_complementary_income
+
+    pages = [{"page": 1, "text": "\n".join([
+        "SOLDE DEPART AU 31 12 2019 | 142 811,90 CREDITEUR",
+        # Marqueur volontairement erroné, comme sur la reconstruction OCR.
+        "03 01 | VIR. EMIS WEB VERS LEMKHENTER | 03 01 2020 | CREDIT: 500,00",
+        # Les deux vrais crédits n'ont plus de marqueur de colonne.
+        "08 01 | VIREMENT RECU DE TRESORERIE PREFECTURE | 09 01 2020 | 5 621,62",
+        "08 01 | VIREMENT RECU DE TRESORERIE PREFECTURE | 09 01 2020 | 6 158,88",
+        "09 01 | PAIEMENT CB BOUTIQUE | 08 01 2020 | 638,52",
+    ])}]
+
+    result = derive_complementary_income([], pages, "attijari.png", "sha")
+
+    assert result is not None
+    assert result["value"] == pytest.approx(11780.50)
+    assert sorted(item["montant"] for item in result["source"]["evidence"]) == [
+        pytest.approx(5621.62), pytest.approx(6158.88)
+    ]
+
+
 def test_bank_fee_misclassified_by_model_is_not_income():
     """Un type LLM erroné ne transforme jamais des frais débités en revenu."""
     from extraction.financial_metrics import derive_complementary_income
