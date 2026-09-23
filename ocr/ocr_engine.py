@@ -128,7 +128,20 @@ class OCREngine:
             processed_score = self._business_document_score(
                 processed_lines, document_type
             )
-            if processed_score < 18:
+            statement_detail_score = (
+                self._statement_detail_score(processed_lines)
+                if document_type == "releve"
+                else None
+            )
+            # Un relevé peut obtenir un excellent score global uniquement
+            # grâce à son en-tête et à ses montants, tout en ayant perdu les
+            # dates et libellés des opérations. C'était le cas des scans CIH :
+            # le calcul recevait « CREDIT: 500,00 » sans « VIREMENT RECU ».
+            # Dans ce cas, comparer aussi la lecture couleur complète.
+            needs_original = processed_score < 18 or (
+                document_type == "releve" and statement_detail_score < 12
+            )
+            if needs_original:
                 original = image
                 if original.ndim == 2:
                     original = cv2.cvtColor(original, cv2.COLOR_GRAY2RGB)
@@ -136,14 +149,93 @@ class OCREngine:
                 original_score = self._business_document_score(
                     original_lines, document_type
                 )
-                if original_score > processed_score:
-                    logger.info(
-                        "%s : lecture couleur retenue (score %.1f contre %.1f)",
-                        document_type, original_score, processed_score,
+                original_detail_score = (
+                    self._statement_detail_score(original_lines)
+                    if document_type == "releve"
+                    else None
+                )
+                if (
+                    original_score > processed_score
+                    or (
+                        document_type == "releve"
+                        and original_detail_score > statement_detail_score
                     )
-                    return original_lines
+                ):
+                    logger.info(
+                        "%s : lecture couleur retenue (score %.1f/%.1f, détail %s/%s)",
+                        document_type, original_score, processed_score,
+                        original_detail_score, statement_detail_score,
+                    )
+                    processed_lines = original_lines
+                    processed_score = original_score
+                    statement_detail_score = original_detail_score
+
+            # Si la lecture globale reste pauvre en vraies opérations, relire
+            # la page par bandes agrandies. Cette passe conserve les coordonnées
+            # originales pour reconstruire correctement Débit et Crédit.
+            if document_type == "releve" and statement_detail_score < 12:
+                regional_lines = self._read_statement_regions(image)
+                regional_detail_score = self._statement_detail_score(regional_lines)
+                if regional_detail_score > statement_detail_score:
+                    logger.info(
+                        "Relevé : lecture agrandie par bandes retenue "
+                        "(détail %.1f contre %.1f)",
+                        regional_detail_score, statement_detail_score,
+                    )
+                    processed_lines = regional_lines
 
         return processed_lines
+
+    def _read_statement_regions(self, image):
+        """Relit un relevé en bandes agrandies, en gardant sa géométrie."""
+        height, _ = image.shape[:2]
+        # Couverture complète : l'en-tête reste disponible pour le nom de la
+        # banque et les bandes centrales renforcent les petites opérations.
+        regions = ((0.00, 0.32), (0.25, 0.58), (0.51, 0.84), (0.77, 1.00))
+        scale = 2.0
+        collected = []
+        for start_ratio, end_ratio in regions:
+            y0, y1 = int(height * start_ratio), int(height * end_ratio)
+            crop = image[y0:y1, :]
+            enlarged = cv2.resize(
+                crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
+            )
+            lines = self._prediction_to_lines(self.reader.predict(enlarged))
+            for line in lines:
+                line = dict(line)
+                box = line.get("bbox")
+                try:
+                    line["bbox"] = [
+                        [float(point[0]) / scale, float(point[1]) / scale + y0]
+                        for point in box
+                    ]
+                except (TypeError, ValueError, IndexError):
+                    pass
+                collected.append(line)
+
+        # Les zones se chevauchent : supprimer seulement une reconnaissance
+        # identique située pratiquement au même endroit.
+        unique = []
+        for line in sorted(
+            collected,
+            key=lambda item: float(item.get("confidence") or 0),
+            reverse=True,
+        ):
+            normalized = " ".join(str(line.get("text") or "").upper().split())
+            center = self._box_center(line.get("bbox"))
+            if not normalized:
+                continue
+            duplicate = False
+            for kept in unique:
+                if normalized != kept["normalized"]:
+                    continue
+                other = kept["center"]
+                if center and other and abs(center[0] - other[0]) <= 12 and abs(center[1] - other[1]) <= 12:
+                    duplicate = True
+                    break
+            if not duplicate:
+                unique.append({"line": line, "normalized": normalized, "center": center})
+        return [item["line"] for item in unique]
 
     def _read_bulletin_regions(self, image):
         """OCR par bandes avec coordonnées remappées sur la page originale."""
@@ -257,6 +349,27 @@ class OCREngine:
         )
         readable_lines = min(len(lines), 30) / 5
         return marker_score + amount_score + readable_lines
+
+    @staticmethod
+    def _statement_detail_score(lines):
+        """Mesure la présence d'opérations exploitables, pas seulement de montants."""
+        text = "\n".join(str(line.get("text") or "") for line in lines)
+        normalized = unicodedata.normalize("NFKD", text).encode(
+            "ascii", "ignore"
+        ).decode().lower()
+        dates = len(re.findall(r"(?<!\d)\d{1,2}\s*[./-]\s*\d{1,2}(?!\d)", normalized))
+        operation_words = len(re.findall(
+            r"\b(?:virement|virt|versement|retrait|paiement|prelevement|"
+            r"commission|frais|echeance|remboursement|recu|emis)\w*\b",
+            normalized,
+        ))
+        descriptions = sum(
+            1 for line in normalized.splitlines()
+            if len(re.findall(r"[a-z]{3,}", line)) >= 2
+        )
+        # Plusieurs dates ET plusieurs libellés sont nécessaires au calcul.
+        # Les plafonds empêchent un long pied de page d'écraser le diagnostic.
+        return min(dates, 8) + min(operation_words, 8) + min(descriptions, 8) / 2
 
     @staticmethod
     def lines_to_layout_text(lines):

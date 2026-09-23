@@ -19,6 +19,7 @@ def apply_assistant_result(result):
         "prix_bien": "purchase_price",
         "apport_personnel": "contribution",
         "duree_souhaitee_annees": "duration_years",
+        "taux_annuel_indicatif": "annual_rate",
     }
     widget_mapping = {
         "prix_bien": ("quick_price",),
@@ -30,11 +31,22 @@ def apply_assistant_result(result):
             "quick_years",
             "quick_capacity_years",
         ),
+        "montant_financement_souhaite": ("quick_price",),
+        "taux_annuel_indicatif": (
+            "quick_rate",
+            "quick_capacity_rate",
+        ),
         "revenu_mensuel_net": ("quick_capacity_income",),
         "charges_mensuelles": ("quick_capacity_charges",),
     }
 
     for field in result.get("profile_updates", {}):
+        if (
+            field == "montant_financement_souhaite"
+            and profile.get(field) is not None
+        ):
+            contribution = float(project.get("contribution") or 0)
+            project["purchase_price"] = float(profile[field]) + contribution
         if field in project_mapping and profile.get(field) is not None:
             project[project_mapping[field]] = profile[field]
         for widget_key in widget_mapping.get(field, ()):
