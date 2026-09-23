@@ -213,11 +213,8 @@ class OCREngine:
                     pass
                 collected.append(line)
 
-        # Les zones se chevauchent. La même cellule peut être reconnue deux
-        # fois avec des textes légèrement différents (par exemple 2 000,00 et
-        # 2 600,00). La comparaison doit donc d'abord être géométrique et non
-        # textuelle ; la liste est triée par confiance afin de conserver la
-        # meilleure lecture du même emplacement.
+        # Les zones se chevauchent : supprimer seulement une reconnaissance
+        # identique située pratiquement au même endroit.
         unique = []
         for line in sorted(
             collected,
@@ -229,26 +226,15 @@ class OCREngine:
             if not normalized:
                 continue
             duplicate = False
-            bounds = self._box_bounds(line.get("bbox"))
             for kept in unique:
+                if normalized != kept["normalized"]:
+                    continue
                 other = kept["center"]
-                same_region = self._boxes_same_region(bounds, kept["bounds"])
-                same_text_position = (
-                    normalized == kept["normalized"]
-                    and center and other
-                    and abs(center[0] - other[0]) <= 12
-                    and abs(center[1] - other[1]) <= 12
-                )
-                if same_region or same_text_position:
+                if center and other and abs(center[0] - other[0]) <= 12 and abs(center[1] - other[1]) <= 12:
                     duplicate = True
                     break
             if not duplicate:
-                unique.append({
-                    "line": line,
-                    "normalized": normalized,
-                    "center": center,
-                    "bounds": bounds,
-                })
+                unique.append({"line": line, "normalized": normalized, "center": center})
         return [item["line"] for item in unique]
 
     def _read_bulletin_regions(self, image):
@@ -315,30 +301,6 @@ class OCREngine:
             return (sum(xs) / len(xs), sum(ys) / len(ys))
         except (TypeError, ValueError, IndexError, ZeroDivisionError):
             return None
-
-    @staticmethod
-    def _box_bounds(box):
-        try:
-            points = list(box)
-            xs = [float(point[0]) for point in points]
-            ys = [float(point[1]) for point in points]
-            return min(xs), min(ys), max(xs), max(ys)
-        except (TypeError, ValueError, IndexError):
-            return None
-
-    @staticmethod
-    def _boxes_same_region(first, second):
-        """Détecte deux lectures du même bloc dans des bandes superposées."""
-        if first is None or second is None:
-            return False
-        ax0, ay0, ax1, ay1 = first
-        bx0, by0, bx1, by1 = second
-        intersection_w = max(0.0, min(ax1, bx1) - max(ax0, bx0))
-        intersection_h = max(0.0, min(ay1, by1) - max(ay0, by0))
-        intersection = intersection_w * intersection_h
-        smaller = min(max((ax1 - ax0) * (ay1 - ay0), 1.0),
-                      max((bx1 - bx0) * (by1 - by0), 1.0))
-        return intersection / smaller >= 0.72
 
     @staticmethod
     def _prediction_to_lines(raw_result):
@@ -448,10 +410,7 @@ class OCREngine:
             return "\n".join(text for _, text in sorted(fallback))
 
         typical_height = statistics.median(item["height"] for item in positioned)
-        # 0,60 fusionnait parfois deux opérations CIH successives. Les blocs
-        # d'une même ligne ont normalement un fort recouvrement vertical ; une
-        # tolérance plus stricte conserve chaque mouvement séparément.
-        tolerance = max(3.0, typical_height * 0.38)
+        tolerance = max(5.0, typical_height * 0.60)
         rows = []
         for item in sorted(positioned, key=lambda value: (value["y"], value["x"])):
             best_row = None
@@ -466,7 +425,7 @@ class OCREngine:
                 )
                 overlap_ratio = overlap / max(1.0, min(item["height"], row["height"]))
                 distance = abs(item["y"] - row["center"])
-                if overlap_ratio >= 0.55 or distance <= tolerance:
+                if overlap_ratio >= 0.25 or distance <= tolerance:
                     if best_distance is None or distance < best_distance:
                         best_row = row
                         best_distance = distance
