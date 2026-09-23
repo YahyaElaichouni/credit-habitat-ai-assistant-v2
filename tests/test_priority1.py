@@ -186,3 +186,83 @@ def test_ocr_retains_blank_page_boundaries(monkeypatch):
     engine.image_to_text = lambda image: image
     assert engine.document_to_pages("fictif.pdf") == [
         {"page": 1, "text": ""}, {"page": 2, "text": "Net 6000"}]
+
+
+def test_cih_glued_dates_and_received_transfers_are_summed():
+    """Les deux dates CIH peuvent être accolées par l'OCR (01/0901/09)."""
+    from extraction.financial_metrics import derive_complementary_income
+
+    pages = [{"page": 1, "text": "\n".join([
+        "SOLDE DEPART AU : 31/08/2023 | CREDIT: 45 674,66",
+        "01/0901/09 | VIREMENT RECU DE ABDELALI OUALAYAD | CREDIT: 500,00",
+        "03/0903/09 | VIREMENT RECU DE MERIEM MOUDAKIR | CREDIT: 250,00",
+        "04/0904/09 | RECHARGE MAROC TELECOM | DEBIT: 10,00",
+        "04/0904/09 | VIRT RECU DE LA PART HUTOELLE | CREDIT: 13 175,79",
+        "10/0910/09 | RETRAIT CARTE GAB | DEBIT: 1 000,00",
+    ])}]
+
+    result = derive_complementary_income([], pages, "cih.png", "sha")
+
+    assert result is not None
+    assert result["value"] == pytest.approx(750.0)
+    assert len(result["source"]["evidence"]) == 2
+    assert result["source"]["excluded_evidence"][0]["montant"] == pytest.approx(13175.79)
+    assert "remboursement" in result["source"]["excluded_evidence"][0]["reason"]
+
+
+def test_bank_fee_misclassified_by_model_is_not_income():
+    """Un type LLM erroné ne transforme jamais des frais débités en revenu."""
+    from extraction.financial_metrics import derive_complementary_income
+
+    line = "26/01/2024 | PACKAGES FRAIS PACK GLOBAL BUSINESS | DEBIT: 80,00"
+    income_line = "12/01/2024 | VERST DEPLACE 1351190 | CREDIT: 900,00"
+    pages = [{"page": 1, "text": (
+        "ANCIEN SOLDE AU 29/12/2023\n" + line + "\n" + income_line
+    )}]
+    transactions = [{
+        "date": "26/01/2024",
+        "description": "PACKAGES FRAIS PACK GLOBAL BUSINESS",
+        "montant": 80.0,
+        "type": "credit",  # erreur volontaire du modèle
+        "page": 1,
+        "quote": line,
+    }]
+
+    result = derive_complementary_income(transactions, pages, "cdm.png", "sha")
+
+    assert result is not None
+    assert result["value"] == 900.0
+    assert result["source"].get("absence_based") is not True
+
+
+def test_statement_layout_keeps_adjacent_operations_on_separate_rows(monkeypatch):
+    """Deux opérations CIH proches verticalement ne doivent pas être fusionnées."""
+    import importlib.util
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(sys.modules, "paddleocr", SimpleNamespace(PaddleOCR=object))
+    monkeypatch.setitem(sys.modules, "ocr.pdf_loader", SimpleNamespace(PDFLoader=object))
+    monkeypatch.setitem(sys.modules, "ocr.preprocessing", SimpleNamespace(ImagePreprocessor=object))
+    spec = importlib.util.spec_from_file_location(
+        "ocr_engine_layout_test", Path(__file__).parents[1] / "ocr/ocr_engine.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def box(x0, y0, x1, y1):
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
+    lines = [
+        {"text": "DEBIT", "bbox": box(600, 0, 680, 12)},
+        {"text": "CREDIT", "bbox": box(720, 0, 810, 12)},
+        {"text": "02/09", "bbox": box(10, 20, 60, 30)},
+        {"text": "VIREMENT RECU A", "bbox": box(100, 20, 400, 30)},
+        {"text": "500,00", "bbox": box(730, 20, 800, 30)},
+        {"text": "03/09", "bbox": box(10, 25, 60, 35)},
+        {"text": "VIREMENT RECU B", "bbox": box(100, 25, 400, 35)},
+        {"text": "250,00", "bbox": box(730, 25, 800, 35)},
+    ]
+    rendered = module.OCREngine.lines_to_layout_text(lines)
+
+    assert "02/09 | VIREMENT RECU A | CREDIT: 500,00" in rendered
+    assert "03/09 | VIREMENT RECU B | CREDIT: 250,00" in rendered

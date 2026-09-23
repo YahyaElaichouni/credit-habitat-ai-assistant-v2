@@ -3,7 +3,9 @@ import re
 import statistics
 import unicodedata
 import logging
-from datetime import datetime
+from difflib import SequenceMatcher
+from datetime import datetime, timedelta
+import calendar
 from pathlib import Path
 
 CREDIT_CHARGE_PATTERN = (
@@ -34,13 +36,64 @@ INCOMING_OPERATION_PATTERN = (
     r"|\binteret\s+crediteur\b"
 )
 EXTRA_INCOME_EXCLUDED = (
-    "salaire", "paie", "remboursement", "annulation", "contrepassation",
+    "salaire", "paie", "remboursement", "rembourse", "annulation", "contrepassation",
+    "mutuelle", "indemnite", "indemnisation", "restitution", "regularisation",
     "solde initial", "solde depart", "solde precedent", "solde au",
     "ancien solde", "nouveau solde", "total mouvement",
     "virement emis", "commission", "retrait", "frais", "paiement",
 )
 
+EXTRA_INCOME_EXCLUSION_REASONS = (
+    (("solde initial", "solde depart", "solde precedent", "ancien solde", "nouveau solde", "solde au"),
+     "solde du compte, pas un revenu"),
+    (("salaire", "paie"), "salaire déjà pris en compte par le bulletin de paie"),
+    (("mutuelle", "remboursement", "rembourse", "indemnite", "indemnisation", "restitution"),
+     "remboursement ou indemnisation ponctuelle"),
+    (("annulation", "contrepassation", "regularisation"), "correction bancaire ponctuelle"),
+    (("commission", "frais", "retrait", "paiement"), "dépense ou opération technique"),
+    (("total mouvement",), "total du relevé, pas une opération"),
+)
+
+# Libellés qui prouvent qu'un débit est une dépense courante/technique et non
+# un revenu. Cette garde est surtout utile lorsque le LLM inverse les colonnes
+# d'un tableau : le type extrait ne doit jamais suffire à transformer des frais
+# ou un prélèvement en revenu complémentaire.
+OUTGOING_OPERATION_PATTERN = (
+    r"\b(?:frais|commission|retrait|paiement|achat|prelevement|cotisation|"
+    r"assurance|taxe|timbre|droit|facture|recharge|virement\s+emis)\w*\b"
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _income_exclusion_reason(description):
+    text = _norm(description)
+    for keywords, reason in EXTRA_INCOME_EXCLUSION_REASONS:
+        if any(keyword in text for keyword in keywords):
+            return reason
+    # Les scans CIH observés transforment parfois MUTUELLE en HUTOELLE.
+    # On limite la tolérance à ces familles d'exclusion pour ne pas écarter
+    # arbitrairement un virement légitime.
+    words = re.findall(r"[a-z]{4,}", text)
+    if any(_similar_word(word, ("mutuelle",), 0.70) for word in words):
+        return "remboursement ou indemnisation ponctuelle"
+    if any(
+        _similar_word(word, ("remboursement", "indemnisation"), 0.76)
+        for word in words
+    ):
+        return "remboursement ou indemnisation ponctuelle"
+    return None
+
+
+def _evidence_item(item, decision="retenu", reason=None):
+    result = {
+        key: item.get(key)
+        for key in ("date", "description", "montant", "page", "quote")
+    }
+    result["decision"] = decision
+    if reason:
+        result["reason"] = reason
+    return result
 
 
 def _verified_transactions(transactions, pages):
@@ -58,6 +111,58 @@ def _verified_transactions(transactions, pages):
 def _norm(value):
     text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _similar_word(word, targets, threshold=0.72):
+    """Tolérance bornée aux substitutions OCR sur un seul mot."""
+    cleaned = re.sub(r"[^a-z]", "", _norm(word))
+    if not cleaned:
+        return False
+    return any(
+        SequenceMatcher(None, cleaned, target).ratio() >= threshold
+        for target in targets
+    )
+
+
+def _incoming_description(description):
+    """Reconnaît un encaissement malgré les erreurs OCR courantes.
+
+    Exemples réels CIH : VIRSNENT/VIRZHENT pour VIREMENT et
+    RECD/RECO pour RECU. Deux indices sont exigés pour ne pas transformer
+    un virement émis ou une commission en revenu.
+    """
+    text = _norm(description)
+    if re.search(INCOMING_OPERATION_PATTERN, text):
+        return True
+    words = re.findall(r"[a-z]{2,}", text)
+    if any(
+        _similar_word(word, ("commission", "frais", "retrait", "paiement"), 0.68)
+        for word in words
+    ):
+        return False
+    has_transfer = any(
+        word == "virt" or _similar_word(word, ("virement", "versement"), 0.68)
+        for word in words
+    )
+    has_received = any(
+        _similar_word(word, ("recu", "reception", "versement"), 0.66)
+        for word in words
+    )
+    has_sent = any(_similar_word(word, ("emis",), 0.72) for word in words)
+    return has_transfer and has_received and not has_sent
+
+
+def _outgoing_description(description):
+    """Reconnaît un débit même lorsque EMIS/FAVEUR est déformé par l'OCR."""
+    text = _norm(description)
+    if re.search(OUTGOING_OPERATION_PATTERN, text):
+        return True
+    words = re.findall(r"[a-z]{3,}", text)
+    has_sent = any(_similar_word(word, ("emis",), 0.65) for word in words)
+    has_favour = any(_similar_word(word, ("faveur",), 0.67) for word in words)
+    # « en faveur de » prouve un mouvement sortant sur les relevés CIH,
+    # même si VIREMENT ou EMIS a été partiellement perdu.
+    return has_sent or has_favour
 
 
 def _date(value, default_year=None):
@@ -169,10 +274,45 @@ def _statement_month(pages):
         start, end = _date(period.group(1)), _date(period.group(2))
         if start and end and (start.year, start.month) == (end.year, end.month):
             return start.strftime("%Y-%m")
-    # Un solde de départ au dernier jour du mois ne garantit pas que toutes
-    # les opérations appartiennent au mois suivant : certains relevés couvrent
-    # quelques jours de part et d'autre du changement d'année.
+    # Relevés mensuels sans borne « Du/Au » (notamment CIH) : un solde de
+    # départ daté du dernier jour du mois, suivi d'un vrai tableau comprenant
+    # plusieurs opérations, prouve que la période commence le lendemain.
+    # Cette ancre permet de corriger les mois OCR déformés comme 02/0102/80
+    # alors que le document affiche un solde au 31/08/2023.
+    opening = re.search(
+        # « SOGOE DEPART » est une déformation observée de « SOLDE DEPART ».
+        r"(?i)(?:solde|so[a-z]{2,4}e)\s+(?:de\s+)?d[ée]part\s+au.{0,80}?"
+        r"(\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4})",
+        text,
+        re.S,
+    )
+    if opening:
+        opening_date = _date(opening.group(1))
+        operation_count = len(re.findall(
+            r"(?i)\b(?:virement|virenent|virem[a-z]*|virt|retrait|paiement|"
+            r"commission|frais|recharge|prelevement)\b",
+            text,
+        ))
+        if (
+            opening_date
+            and opening_date.day == calendar.monthrange(
+                opening_date.year, opening_date.month
+            )[1]
+            and operation_count >= 3
+        ):
+            return (opening_date + timedelta(days=1)).strftime("%Y-%m")
     return None
+
+
+def _force_statement_month(day, expected_month):
+    """Rattache une date OCR au mois mensuel explicitement ancré."""
+    if day is None or not expected_month:
+        return day
+    year, month = (int(part) for part in expected_month.split("-"))
+    try:
+        return day.replace(year=year, month=month)
+    except ValueError:
+        return None
 
 
 def _amount(value):
@@ -492,6 +632,70 @@ def _ocr_keyword_transactions(pages, keywords, transaction_type):
     return [item for item, _, _ in unique]
 
 
+def _ocr_fuzzy_incoming_transactions(pages):
+    """Relit les virements reçus dont le libellé a été déformé par l'OCR."""
+    date_pattern = re.compile(
+        r"^\s*[^0-9]{0,2}(?P<date>\d{1,2}\s*[./-]\s*\d{1,2}"
+        r"(?:\s*[./-]\s*\d{2,4})?)"
+    )
+    amount_pattern = re.compile(
+        r"(?<![\d:])(?:\d{1,3}(?:[ .]\d{3})+|\d+)[,.]\s*\d{2}(?!\d)"
+    )
+    expected_month = _statement_month(pages)
+    found = []
+    for page_item in pages or []:
+        page_number = page_item.get("page")
+        if type(page_number) is not int:
+            continue
+        for raw_line in str(page_item.get("text") or "").splitlines():
+            normalized = _norm(raw_line)
+            date_match = date_pattern.search(normalized)
+            amounts = list(amount_pattern.finditer(normalized))
+            if not date_match or not amounts:
+                continue
+            amount_match = amounts[-1]
+            day = _transaction_date(date_match.group("date"), pages)
+            day = _force_statement_month(day, expected_month)
+            amount = _amount(amount_match.group(0))
+            if (
+                day is None or amount is None or amount <= 0
+                or (expected_month and day.strftime("%Y-%m") != expected_month)
+            ):
+                continue
+            description = normalized[date_match.end():amount_match.start()]
+            # Enlever la date valeur accolée à la date opération :
+            # « 02/0902/09 | VIREMEAT RECD ... ».
+            description = re.sub(
+                r"^\s*\d{1,2}\s*[./-]\s*\d{1,2}"
+                r"(?:\s*[./-]\s*\d{2,4})?\s*\|?\s*",
+                "",
+                description,
+            ).strip(" |-:")
+            if not _incoming_description(description):
+                continue
+            found.append({
+                "date": date_match.group("date"),
+                "description": description,
+                "montant": amount,
+                "type": "credit",
+                "page": page_number,
+                "quote": " ".join(raw_line.split()),
+                "month": day.strftime("%Y-%m"),
+            })
+
+    unique = []
+    seen = set()
+    for item in found:
+        identity = (
+            item["page"], item["date"], round(float(item["montant"]), 2),
+            _norm(item["description"]),
+        )
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(item)
+    return unique
+
+
 def _column_marked_transactions(pages, transaction_type):
     """Lit les lignes dont la colonne Débit/Crédit a été conservée par l'OCR.
 
@@ -547,6 +751,16 @@ def _column_marked_transactions(pages, transaction_type):
     # ici : deux opérations strictement identiques peuvent être deux mouvements
     # bancaires réels et doivent toutes deux contribuer au total.
     return found
+
+
+def _has_column_marker(item, marker):
+    """Vrai seulement si la citation OCR prouve explicitement la colonne.
+
+    ``type`` est une sortie du modèle et peut être erroné. Les marqueurs
+    DEBIT:/CREDIT: sont, eux, ajoutés depuis la géométrie du tableau OCR.
+    """
+    quote = str(item.get("quote") or "")
+    return bool(re.search(rf"\b{marker}\s*:", _norm(quote), re.I))
 
 
 def _prefer_complete_evidence(model_transactions, ocr_transactions, metric_name):
@@ -665,6 +879,7 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
     obligatoire dans les deux cas.
     """
     eligible = []
+    excluded = []
     expected_month = _statement_month(pages)
     for item in transactions or []:
         if not isinstance(item, dict):
@@ -676,37 +891,75 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         page = item.get("page")
         quote = _transaction_evidence(item, pages)
         verified = quote is not None
-        incoming_label = bool(re.search(INCOMING_OPERATION_PATTERN, description))
-        is_credit = transaction_type in {"credit", "c", "cr"} or (
-            transaction_type == "" and incoming_label
+        incoming_label = _incoming_description(description)
+        column_proven = _has_column_marker(item, "credit")
+        outgoing_label = _outgoing_description(description)
+        # Un type="credit" produit par le LLM ne constitue pas une preuve
+        # suffisante : c'est précisément ce qui transformait « FRAIS PACK
+        # ... 80,00 » en revenu sur certains relevés Crédit du Maroc. Il faut
+        # soit un marqueur de colonne issu de la géométrie OCR, soit un libellé
+        # entrant explicite (VIREMENT RECU, VERSEMENT, etc.).
+        is_credit = column_proven or (
+            transaction_type in {"credit", "c", "cr", ""}
+            and incoming_label
+            and not outgoing_label
         )
         day_in_period = day and (
             expected_month is None or day.strftime("%Y-%m") == expected_month
         )
-        if (is_credit and day_in_period and amount is not None and amount > 0
-                and not any(word in description for word in EXTRA_INCOME_EXCLUDED) and verified):
-            eligible.append({**item, "montant": amount, "quote": quote,
-                             "month": day.strftime("%Y-%m")})
+        exclusion_reason = _income_exclusion_reason(description)
+        if (is_credit and day_in_period and amount is not None and amount > 0 and verified):
+            candidate = {**item, "montant": amount, "quote": quote,
+                         "month": day.strftime("%Y-%m")}
+            if exclusion_reason:
+                excluded.append(_evidence_item(candidate, "exclu", exclusion_reason))
+            else:
+                eligible.append(candidate)
     # Le secours est systématique : le modèle extrait fréquemment la première
     # occurrence d'un virement récurrent mais oublie les suivantes.
+    marked_candidates = _column_marked_transactions(pages, "credit")
     marked_eligible = [
-        item for item in _column_marked_transactions(pages, "credit")
-        if not any(
-            word in _norm(item["description"])
-            for word in EXTRA_INCOME_EXCLUDED
-        )
+        item for item in marked_candidates
+        if _income_exclusion_reason(item["description"]) is None
+        # Le marqueur CREDIT vient de la géométrie réelle du tableau. Il reste
+        # une preuve suffisante si l'OCR a perdu le mot VIREMENT/RECU, à
+        # condition qu'aucun indice de mouvement sortant ne soit présent.
+        and not _outgoing_description(item["description"])
     ]
-    ocr_eligible = [
+    marked_excluded = [
+        _evidence_item(item, "exclu", _income_exclusion_reason(item["description"]))
+        for item in marked_candidates
+        if _income_exclusion_reason(item["description"]) is not None
+    ]
+    ocr_candidates = [
         item for item in _ocr_keyword_transactions(
             pages, INCOMING_OPERATION_PATTERN, "credit"
         )
         if re.search(INCOMING_OPERATION_PATTERN, _norm(item["description"]))
-        and not any(
-            word in _norm(item["description"])
-            for word in EXTRA_INCOME_EXCLUDED
-        )
     ]
+    ocr_eligible = [
+        item for item in ocr_candidates
+        if _income_exclusion_reason(item["description"]) is None
+    ]
+    fuzzy_candidates = _ocr_fuzzy_incoming_transactions(pages)
+    fuzzy_eligible = [
+        item for item in fuzzy_candidates
+        if _income_exclusion_reason(item["description"]) is None
+    ]
+    if len(fuzzy_eligible) > len(ocr_eligible):
+        ocr_eligible = fuzzy_eligible
+        fallback_candidates = fuzzy_candidates
+    else:
+        fallback_candidates = ocr_candidates
     ocr_eligible = marked_eligible or ocr_eligible
+    if marked_candidates:
+        excluded = marked_excluded
+    elif fallback_candidates:
+        excluded = [
+            _evidence_item(item, "exclu", _income_exclusion_reason(item["description"]))
+            for item in fallback_candidates
+            if _income_exclusion_reason(item["description"]) is not None
+        ]
     eligible = (
         marked_eligible
         if marked_eligible
@@ -733,9 +986,13 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         "confidence": 0.60 if regularity_proven else 0.40,
         "source": {"document": Path(document_path).name, "sha256": document_sha256,
                    "page": first["page"], "quote": first["quote"], "verified": True,
-                   "evidence": [{k: x.get(k) for k in ("date", "description", "montant", "page", "quote")}
-                                for x in eligible],
-                   "method": "médiane des crédits mensuels vérifiés, salaire et opérations techniques exclus",
+                   "evidence": [_evidence_item(x) for x in eligible],
+                   "excluded_evidence": excluded,
+                   "method": (
+                       "entrées créditrices détectées sur un seul relevé — régularité à confirmer"
+                       if not regularity_proven else
+                       "médiane des crédits mensuels récurrents vérifiés"
+                   ),
                    "regularity_proven": regularity_proven},
     }
 
