@@ -35,14 +35,6 @@ INCOMING_OPERATION_PATTERN = (
     r"pension|loyer|prime|distribution|dividende|benefice)\w*\b"
     r"|\binteret\s+crediteur\b"
 )
-EXTRA_INCOME_EXCLUDED = (
-    "salaire", "paie", "remboursement", "rembourse", "annulation", "contrepassation",
-    "mutuelle", "indemnite", "indemnisation", "restitution", "regularisation",
-    "solde initial", "solde depart", "solde precedent", "solde au",
-    "ancien solde", "nouveau solde", "total mouvement",
-    "virement emis", "commission", "retrait", "frais", "paiement",
-)
-
 EXTRA_INCOME_EXCLUSION_REASONS = (
     (("solde initial", "solde depart", "solde precedent", "ancien solde", "nouveau solde", "solde au"),
      "solde du compte, pas un revenu"),
@@ -95,18 +87,6 @@ def _evidence_item(item, decision="retenu", reason=None):
     if reason:
         result["reason"] = reason
     return result
-
-
-def _verified_transactions(transactions, pages):
-    """Transactions dont la citation est réellement présente sur la page OCR."""
-    page_map = {p["page"]: _norm(p["text"]) for p in pages}
-    verified = []
-    for item in transactions or []:
-        page, quote = item.get("page"), item.get("quote")
-        if (type(page) is int and page in page_map and isinstance(quote, str)
-                and _norm(quote) and _norm(quote) in page_map[page]):
-            verified.append(item)
-    return verified
 
 
 def _norm(value):
@@ -872,7 +852,6 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
         amount = _amount(item.get("montant"))
         day = _transaction_date(item.get("date"), pages)
         transaction_type = _norm(item.get("type"))
-        page = item.get("page")
         quote = _transaction_evidence(item, pages)
         verified = quote is not None
         credit_label = bool(re.search(CREDIT_CHARGE_PATTERN, description))
@@ -966,7 +945,6 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         amount = _amount(item.get("montant"))
         day = _transaction_date(item.get("date"), pages)
         transaction_type = _norm(item.get("type"))
-        page = item.get("page")
         quote = _transaction_evidence(item, pages)
         verified = quote is not None
         incoming_label = _incoming_description(description)

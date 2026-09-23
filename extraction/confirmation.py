@@ -106,7 +106,7 @@ def _csv_cell(value):
 def export_confirmed_csv(result, document_type, confirmations, document_id):
     fields = result.get("validation_result", {}).get("fields", {})
     rows = []
-    for name, decision in fields.items():
+    for name in fields:
         record = confirmations.get(name)
         # Les anciennes sessions stockaient des valeurs sans preuve de confirmation.
         # Elles doivent être reconfirmées, jamais promues implicitement.
