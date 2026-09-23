@@ -61,6 +61,7 @@ EXTRA_INCOME_EXCLUSION_REASONS = (
 OUTGOING_OPERATION_PATTERN = (
     r"\b(?:frais|commission|retrait|paiement|achat|prelevement|cotisation|"
     r"assurance|taxe|timbre|droit|facture|recharge|virement\s+emis)\w*\b"
+    r"|\bvers\b"
 )
 
 logger = logging.getLogger(__name__)
@@ -132,14 +133,31 @@ def _incoming_description(description):
     un virement émis ou une commission en revenu.
     """
     text = _norm(description)
-    if re.search(INCOMING_OPERATION_PATTERN, text):
-        return True
-    words = re.findall(r"[a-z]{2,}", text)
-    if any(
-        _similar_word(word, ("commission", "frais", "retrait", "paiement"), 0.68)
+    # Les cellules PaddleOCR sont parfois séparées par ``|`` :
+    # ``VIREMENT | RECU | DE ...`` doit être lu comme une seule phrase.
+    semantic_text = re.sub(r"\s*\|\s*", " ", text)
+    words = re.findall(r"[a-z]{2,}", semantic_text)
+    has_sent = any(_similar_word(word, ("emis",), 0.72) for word in words)
+    has_favour = any(
+        _similar_word(word, ("faveur",), 0.67)
         for word in words
-    ):
+    )
+    # Ces indices prouvent un virement sortant, y compris avec les erreurs
+    # OCR observées ``FATEUR``/``FAVEER``. Ils sont évalués avant toute
+    # tolérance positive afin de ne jamais compter un virement émis.
+    if has_sent or has_favour:
         return False
+    if re.search(INCOMING_OPERATION_PATTERN, semantic_text):
+        return True
+    # Après une perte partielle de cellules, ``RECU DE X`` ou même ``DE X``
+    # peut être le seul libellé restant sur une ligne de la colonne crédit.
+    if re.search(r"\b(?:recu|reception)\s+(?:de|du|des)\b", semantic_text):
+        return True
+    if re.search(
+        r"(?:^|[^a-z])(?:de|du|des|do|dx|dk)\s+[a-z][a-z ]{2,}$",
+        semantic_text,
+    ):
+        return True
     has_transfer = any(
         word == "virt" or _similar_word(word, ("virement", "versement"), 0.68)
         for word in words
@@ -148,8 +166,17 @@ def _incoming_description(description):
         _similar_word(word, ("recu", "reception", "versement"), 0.66)
         for word in words
     )
-    has_sent = any(_similar_word(word, ("emis",), 0.72) for word in words)
-    return has_transfer and has_received and not has_sent
+    has_source = any(word in {"de", "du", "des", "do", "dx", "dk"} for word in words)
+    # Tester d'abord la paire VIREMENT + RECU évite que la similarité entre
+    # « virement » et « paiement » ne rejette un vrai encaissement.
+    if has_transfer and (has_received or has_source):
+        return True
+    if any(
+        _similar_word(word, ("commission", "frais", "retrait", "paiement"), 0.68)
+        for word in words
+    ):
+        return False
+    return False
 
 
 def _outgoing_description(description):
@@ -650,7 +677,13 @@ def _ocr_fuzzy_incoming_transactions(pages):
         for raw_line in str(page_item.get("text") or "").splitlines():
             normalized = _norm(raw_line)
             date_match = date_pattern.search(normalized)
-            amounts = list(amount_pattern.finditer(normalized))
+            # Montant réel observé : ``880,00`` peut sortir ``88:0,00``.
+            # Le deux-points n'est supprimé que s'il se trouve au milieu du
+            # montant final ; les heures et les dates restent inchangées.
+            amount_scan_line = re.sub(
+                r"(?<=\d):(?=\d{1,3}[,.]\s*\d{2}(?!\d))", "", normalized
+            )
+            amounts = list(amount_pattern.finditer(amount_scan_line))
             if not date_match or not amounts:
                 continue
             amount_match = amounts[-1]
@@ -662,7 +695,7 @@ def _ocr_fuzzy_incoming_transactions(pages):
                 or (expected_month and day.strftime("%Y-%m") != expected_month)
             ):
                 continue
-            description = normalized[date_match.end():amount_match.start()]
+            description = amount_scan_line[date_match.end():amount_match.start()]
             # Enlever la date valeur accolée à la date opération :
             # « 02/0902/09 | VIREMEAT RECD ... ».
             description = re.sub(
@@ -781,6 +814,51 @@ def _prefer_complete_evidence(model_transactions, ocr_transactions, metric_name)
         )
         return ocr_transactions
     return model_transactions or ocr_transactions
+
+
+def _merge_evidence_series(*series):
+    """Fusionne plusieurs lectures de transactions sans compter deux fois.
+
+    Les marqueurs de colonne, le modèle et le secours OCR peuvent retrouver
+    la même ligne sous des formes légèrement différentes. La citation OCR est
+    l'identité la plus fiable ; à défaut, on compare page, date, montant et
+    libellé normalisé. Deux lignes réellement distinctes restent conservées.
+    """
+    merged = []
+    for items in series:
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            quote = _norm(item.get("quote"))
+            description = _norm(item.get("description")).strip(" |-:")
+            identity = (
+                item.get("page"),
+                _norm(item.get("date")),
+                round(float(_amount(item.get("montant")) or 0.0), 2),
+            )
+            duplicate = False
+            for kept in merged:
+                kept_quote = _norm(kept.get("quote"))
+                if quote and kept_quote and quote == kept_quote:
+                    duplicate = True
+                    break
+                kept_identity = (
+                    kept.get("page"),
+                    _norm(kept.get("date")),
+                    round(float(_amount(kept.get("montant")) or 0.0), 2),
+                )
+                kept_description = _norm(kept.get("description")).strip(" |-:")
+                same_description = (
+                    description == kept_description
+                    or (description and description in kept_description)
+                    or (kept_description and kept_description in description)
+                )
+                if identity == kept_identity and same_description:
+                    duplicate = True
+                    break
+            if not duplicate:
+                merged.append(item)
+    return merged
 
 
 def derive_monthly_credit_charge(transactions, pages, document_path, document_sha256):
@@ -946,27 +1024,19 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         item for item in fuzzy_candidates
         if _income_exclusion_reason(item["description"]) is None
     ]
-    if len(fuzzy_eligible) > len(ocr_eligible):
-        ocr_eligible = fuzzy_eligible
-        fallback_candidates = fuzzy_candidates
-    else:
-        fallback_candidates = ocr_candidates
-    ocr_eligible = marked_eligible or ocr_eligible
-    if marked_candidates:
-        excluded = marked_excluded
-    elif fallback_candidates:
-        excluded = [
-            _evidence_item(item, "exclu", _income_exclusion_reason(item["description"]))
-            for item in fallback_candidates
-            if _income_exclusion_reason(item["description"]) is not None
-        ]
-    eligible = (
-        marked_eligible
-        if marked_eligible
-        else _prefer_complete_evidence(
-            eligible, ocr_eligible, "Revenus complémentaires"
-        )
-    )
+    # Une méthode ne doit jamais masquer les opérations trouvées par une
+    # autre. C'était le cas Attijari : un seul faux marqueur CREDIT sur un
+    # virement émis de 500 MAD supprimait deux vrais virements reçus lus par
+    # le secours textuel. On fusionne les preuves, puis on déduplique par la
+    # citation OCR et l'identité observable de la transaction.
+    fallback_eligible = _merge_evidence_series(ocr_eligible, fuzzy_eligible)
+    eligible = _merge_evidence_series(marked_eligible, fallback_eligible, eligible)
+    fallback_excluded = [
+        _evidence_item(item, "exclu", _income_exclusion_reason(item["description"]))
+        for item in _merge_evidence_series(ocr_candidates, fuzzy_candidates)
+        if _income_exclusion_reason(item["description"]) is not None
+    ]
+    excluded = _merge_evidence_series(marked_excluded, fallback_excluded, excluded)
     if not eligible:
         return _zero_proposal(
             transactions, pages, document_path, document_sha256,
