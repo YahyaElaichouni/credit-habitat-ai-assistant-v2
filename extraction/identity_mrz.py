@@ -155,8 +155,6 @@ def extract_mrz_identity(ocr_text):
         page_quote = page_text.strip()
         id_line_index = next((i for i, line in enumerate(compact_lines) if "IDMAR" in line), None)
         first_raw = raw_lines[id_line_index] if id_line_index is not None else page_quote
-        first = compact_lines[id_line_index].replace("\\", "<") if id_line_index is not None else mrz[:45]
-
         match = re.search(r"(\d{6})\d?([MF])(\d{6})\d?MAR", mrz)
         if not match:
             continue
