@@ -871,7 +871,7 @@ def derive_monthly_credit_charge(transactions, pages, document_path, document_sh
         elif credit_label:
             logger.warning(
                 "Échéance de crédit ignorée: type=%r, montant=%r, date=%r, page=%r, preuve_verifiee=%s",
-                item.get("type"), item.get("montant"), item.get("date"), page, verified,
+                item.get("type"), item.get("montant"), item.get("date"), pages, verified,
             )
     # Le secours est systématique : une liste LLM partielle ne doit pas bloquer
     # la lecture des autres échéances explicitement présentes dans l'OCR.
