@@ -266,8 +266,6 @@ def _fill_generic_period(result: Dict[str, Any], text: str) -> None:
             result["periode_fin"] = _line_field(dates[1].strftime("%d/%m/%Y"), line, 0.95)
             return
 
-    if not _missing(result, "periode_debut") and not _missing(result, "periode_fin"):
-        return
     dated_lines = _transaction_date_lines(result, text)
 
     # Secours pour les OCR qui séparent la date, le libellé et le montant en
@@ -323,16 +321,17 @@ def _fill_generic_period(result: Dict[str, Any], text: str) -> None:
                         "page": _page_at(text, opening.start()),
                     }
                 month_end = calendar.monthrange(period_start.year, period_start.month)[1]
-                if _missing(result, "periode_debut"):
-                    result["periode_debut"] = _line_field(
-                        period_start.strftime("%d/%m/%Y"), evidence, 0.66
-                    )
-                if _missing(result, "periode_fin"):
-                    result["periode_fin"] = _line_field(
-                        period_start.replace(day=month_end).strftime("%d/%m/%Y"),
-                        evidence,
-                        0.58,
-                    )
+                # Cette preuve déterministe est plus fiable qu'une période
+                # proposée par le LLM à partir du solde précédent. Elle
+                # corrige notamment 31/12/2019 -> janvier 2020 chez Attijari.
+                result["periode_debut"] = _line_field(
+                    period_start.strftime("%d/%m/%Y"), evidence, 0.66
+                )
+                result["periode_fin"] = _line_field(
+                    period_start.replace(day=month_end).strftime("%d/%m/%Y"),
+                    evidence,
+                    0.58,
+                )
                 return
 
     if len(dated_lines) < 2:
@@ -543,3 +542,4 @@ def fill_missing_statement_fields(data: Dict[str, Any], ocr_text: str) -> Dict[s
         for key, value in result.items()
         if key == "document_type" or key in STATEMENT_TARGET_FIELDS
     }
+

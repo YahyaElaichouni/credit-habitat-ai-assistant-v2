@@ -257,6 +257,18 @@ def render_document_review(
             )
         ):
             amount_placeholder = st.empty()
+            amount_key = f"review_value_{document_id}_{name}_computed"
+            manual_key = f"review_value_{document_id}_{name}_manual"
+
+            def mark_credit_selection_changed():
+                # Le prochain rerun doit reprendre le total des cases.
+                st.session_state[manual_key] = False
+
+            def mark_credit_amount_edited():
+                # Une frappe utilisateur ne doit jamais être écrasée par le
+                # montant proposé lors du rerun déclenché par le champ.
+                st.session_state[manual_key] = True
+
             if source.get("page"):
                 st.caption(f"Trouvé à la page {source['page']}")
 
@@ -289,21 +301,28 @@ def render_document_review(
                     },
                     disabled=["Date", "Avis du système"],
                     num_rows="fixed",
+                    on_change=mark_credit_selection_changed,
                 )
             try:
                 selection, selected_total = _credit_selection(edited_rows)
                 credit_selections[name] = selection
-                values[name] = str(selected_total)
-                amount_key = f"review_value_{document_id}_{name}_computed"
-                st.session_state[amount_key] = selected_total
+                if (
+                    amount_key not in st.session_state
+                    or not st.session_state.get(manual_key, False)
+                ):
+                    st.session_state[amount_key] = f"{selected_total:.2f}"
+
                 with amount_placeholder.container():
-                    st.number_input(
+                    manual_total = st.text_input(
                         label,
-                        min_value=0.0,
-                        step=0.01,
-                        disabled=True,
                         key=amount_key,
+                        on_change=mark_credit_amount_edited,
+                        help=(
+                            "Montant proposé d'après les opérations cochées. "
+                            "Vous pouvez le corriger manuellement."
+                        ),
                     )
+                values[name] = str(manual_total)
             except (TypeError, ValueError) as exc:
                 credit_selections[name] = []
                 values[name] = ""
