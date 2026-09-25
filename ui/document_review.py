@@ -1,6 +1,7 @@
 """Interface de revue : l'état de confirmation est propre à chaque document."""
 
 import json
+import math
 from typing import get_args
 from ui.document_preview import (
     preferred_source_page,
@@ -89,6 +90,75 @@ def _text_value(value):
     return str(value)
 
 
+def _credit_editor_rows(source, confirmed_source=None):
+    """Construit la grille de choix à partir de toutes les lignes CREDIT."""
+    candidates = list((source or {}).get("credit_candidates") or [])
+    if not candidates:
+        # Compatibilité avec les dossiers extraits avant cette fonctionnalité.
+        candidates = [
+            {**item, "selected_by_system": True,
+             "reason": "revenu complémentaire proposé par le système"}
+            for item in (source or {}).get("evidence") or []
+        ] + [
+            {**item, "selected_by_system": False}
+            for item in (source or {}).get("excluded_evidence") or []
+        ]
+
+    saved = {
+        item.get("candidate_id"): item
+        for item in (confirmed_source or {}).get("human_credit_selection") or []
+        if item.get("candidate_id")
+    }
+    rows = []
+    for index, candidate in enumerate(candidates):
+        candidate_id = candidate.get("candidate_id") or f"legacy-{index}"
+        previous = saved.get(candidate_id, {})
+        rows.append({
+            "Retenir": bool(previous.get(
+                "selected", candidate.get("selected_by_system", False)
+            )),
+            "Date": previous.get("date", candidate.get("date") or ""),
+            "Libellé": previous.get(
+                "description", candidate.get("description") or "Opération créditrice"
+            ),
+            "Montant (MAD)": float(previous.get(
+                "montant", candidate.get("montant") or 0.0
+            )),
+            "Avis du système": candidate.get("reason") or "à vérifier",
+            "_candidate_id": candidate_id,
+            "_page": candidate.get("page"),
+            "_quote": candidate.get("quote"),
+        })
+    return rows
+
+
+def _credit_selection(editor_value):
+    """Normalise la grille Streamlit et calcule le total choisi par le client."""
+    if hasattr(editor_value, "to_dict"):
+        rows = editor_value.to_dict("records")
+    else:
+        rows = list(editor_value or [])
+    decisions = []
+    total = 0.0
+    for row in rows:
+        amount = float(row.get("Montant (MAD)") or 0.0)
+        if not math.isfinite(amount) or amount < 0:
+            raise ValueError("Les montants des opérations doivent être positifs et finis.")
+        selected = bool(row.get("Retenir"))
+        if selected:
+            total += amount
+        decisions.append({
+            "candidate_id": row.get("_candidate_id"),
+            "selected": selected,
+            "date": row.get("Date"),
+            "description": str(row.get("Libellé") or "").strip(),
+            "montant": amount,
+            "page": row.get("_page"),
+            "quote": row.get("_quote"),
+        })
+    return decisions, round(total, 2)
+
+
 def render_document_review(
     result,
     document_type,
@@ -146,6 +216,7 @@ def render_document_review(
     )
 
     values = {}
+    credit_selections = {}
 
     def render_field(name):
         record = confirmations.get(name) or {}
@@ -168,12 +239,96 @@ def render_document_review(
         )
 
         source = decisions[name].get("source") or {}
+        confirmed_source = record.get("source") or {} if confirmed else {}
         if (
             document_type == "releve"
             and name == "revenus_complementaires"
             and source.get("regularity_proven") is False
         ):
             label = "Entrées complémentaires détectées (MAD) — à confirmer"
+
+        if (
+            document_type == "releve"
+            and name == "revenus_complementaires"
+            and (
+                source.get("credit_candidates")
+                or source.get("evidence")
+                or source.get("excluded_evidence")
+            )
+        ):
+            amount_placeholder = st.empty()
+            amount_key = f"review_value_{document_id}_{name}_computed"
+            manual_key = f"review_value_{document_id}_{name}_manual"
+
+            def mark_credit_selection_changed():
+                # Le prochain rerun doit reprendre le total des cases.
+                st.session_state[manual_key] = False
+
+            def mark_credit_amount_edited():
+                # Une frappe utilisateur ne doit jamais être écrasée par le
+                # montant proposé lors du rerun déclenché par le champ.
+                st.session_state[manual_key] = True
+
+            if source.get("page"):
+                st.caption(f"Trouvé à la page {source['page']}")
+
+            with st.expander("Voir le détail du calcul"):
+                st.caption(
+                    "Le système présélectionne les revenus probables. "
+                    "Cochez ou décochez une opération : le montant total "
+                    "est recalculé immédiatement."
+                )
+                edited_rows = st.data_editor(
+                    _credit_editor_rows(source, confirmed_source),
+                    key=f"credit_income_editor_{document_id}",
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "Retenir": st.column_config.CheckboxColumn(
+                            "Retenir", help="Inclure cette opération dans le total"
+                        ),
+                        "Date": st.column_config.TextColumn("Date"),
+                        "Libellé": st.column_config.TextColumn("Libellé"),
+                        "Montant (MAD)": st.column_config.NumberColumn(
+                            "Montant (MAD)", min_value=0.0, format="%.2f"
+                        ),
+                        "Avis du système": st.column_config.TextColumn(
+                            "Avis du système"
+                        ),
+                        "_candidate_id": None,
+                        "_page": None,
+                        "_quote": None,
+                    },
+                    disabled=["Date", "Avis du système"],
+                    num_rows="fixed",
+                    on_change=mark_credit_selection_changed,
+                )
+            try:
+                selection, selected_total = _credit_selection(edited_rows)
+                credit_selections[name] = selection
+                if (
+                    amount_key not in st.session_state
+                    or not st.session_state.get(manual_key, False)
+                ):
+                    st.session_state[amount_key] = f"{selected_total:.2f}"
+
+                with amount_placeholder.container():
+                    manual_total = st.text_input(
+                        label,
+                        key=amount_key,
+                        on_change=mark_credit_amount_edited,
+                        help=(
+                            "Montant proposé d'après les opérations cochées. "
+                            "Vous pouvez le corriger manuellement."
+                        ),
+                    )
+                values[name] = str(manual_total)
+            except (TypeError, ValueError) as exc:
+                credit_selections[name] = []
+                values[name] = ""
+                with amount_placeholder.container():
+                    st.error(str(exc))
+            return
 
         values[name] = st.text_input(
             label,
@@ -248,10 +403,16 @@ def render_document_review(
     with information_column:
         st.markdown("#### Informations détectées")
 
-        with st.form(
-            f"document_review_form_{document_id}",
-            border=True,
-        ):
+        # Les widgets placés dans un formulaire ne déclenchent pas de rerun.
+        # Le relevé utilise un conteneur normal pour recalculer le revenu dès
+        # qu'une opération est cochée ou décochée. Les autres documents
+        # conservent leur formulaire et leur comportement actuel.
+        review_panel = (
+            st.container(border=True)
+            if document_type == "releve"
+            else st.form(f"document_review_form_{document_id}", border=True)
+        )
+        with review_panel:
             for name in essential:
                 render_field(name)
 
@@ -268,11 +429,19 @@ def render_document_review(
                     for name in additional_fields:
                         render_field(name)
 
-            submitted = st.form_submit_button(
-                submit_label,
-                type="primary",
-                width="stretch",
-            )
+            if document_type == "releve":
+                submitted = st.button(
+                    submit_label,
+                    type="primary",
+                    width="stretch",
+                    key=f"document_review_submit_{document_id}",
+                )
+            else:
+                submitted = st.form_submit_button(
+                    submit_label,
+                    type="primary",
+                    width="stretch",
+                )
 
     if not submitted:
         return False
@@ -320,6 +489,14 @@ def render_document_review(
 
             prepared[name] = record
 
+            if name in credit_selections:
+                selected_source = dict(record.get("source") or {})
+                selected_source["human_credit_selection"] = credit_selections[name]
+                selected_source["selection_method"] = (
+                    "sélection humaine des lignes de la colonne CREDIT"
+                )
+                record["source"] = selected_source
+
         except (ValueError, TypeError) as exc:
             errors.append(
                 f"{LABELS.get(name, name)} : {exc}"
@@ -359,3 +536,4 @@ def render_document_review(
     confirmations.update(prepared)
 
     return True
+

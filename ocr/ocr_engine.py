@@ -184,7 +184,178 @@ class OCREngine:
                     )
                     processed_lines = regional_lines
 
+            # Dernière passe exclusivement réservée aux relevés : relire la
+            # colonne CREDIT seule. Le recadrage supprime les libellés et les
+            # traits voisins qui rendent les petits montants CIH difficiles à
+            # reconnaître. Les coordonnées sont remappées sur la page afin de
+            # rattacher chaque montant à sa ligne d'opération lors du rendu.
+            credit_lines = self._read_statement_credit_column(
+                image, processed_lines
+            )
+            if credit_lines:
+                processed_lines = self._merge_statement_credit_lines(
+                    processed_lines, credit_lines
+                )
+
         return processed_lines
+
+    @classmethod
+    def _statement_credit_geometry(cls, lines, image_width):
+        """Localise la colonne CREDIT depuis les en-têtes Débit/Crédit."""
+        headers = []
+        for item in lines or []:
+            text = unicodedata.normalize(
+                "NFKD", str(item.get("text") or "")
+            ).encode("ascii", "ignore").decode().casefold()
+            text = re.sub(r"[^a-z]+", " ", text).strip()
+            if not re.search(r"\b(?:debit|credit)\b", text):
+                continue
+            bounds = cls._box_bounds(item.get("bbox"))
+            center = cls._box_center(item.get("bbox"))
+            if bounds and center:
+                headers.append((text, bounds, center))
+
+        for debit_text, debit_bounds, debit_center in headers:
+            if not re.search(r"\bdebit\b", debit_text):
+                continue
+            for credit_text, credit_bounds, credit_center in headers:
+                if not re.search(r"\bcredit\b", credit_text):
+                    continue
+                typical_height = max(
+                    debit_bounds[3] - debit_bounds[1],
+                    credit_bounds[3] - credit_bounds[1],
+                    1.0,
+                )
+                if (
+                    debit_center[0] >= credit_center[0]
+                    or abs(debit_center[1] - credit_center[1]) > typical_height * 1.8
+                ):
+                    continue
+                gap = credit_center[0] - debit_center[0]
+                x0 = max(0, int((debit_center[0] + credit_center[0]) / 2))
+                x1 = min(
+                    int(image_width),
+                    int(credit_center[0] + max(gap * 0.80, typical_height * 3)),
+                )
+                y0 = max(0, int(max(debit_bounds[3], credit_bounds[3])))
+                if x1 - x0 >= 20:
+                    return x0, x1, y0
+        return None
+
+    def _read_statement_credit_column(self, image, reference_lines):
+        """OCR agrandi de toutes les cellules monétaires de la colonne crédit."""
+        height, width = image.shape[:2]
+        geometry = self._statement_credit_geometry(reference_lines, width)
+        if geometry is None:
+            logger.info(
+                "Relevé : en-têtes Débit/Crédit non localisés, "
+                "passe ciblée ignorée"
+            )
+            return []
+
+        x0, x1, y0 = geometry
+        amount_pattern = re.compile(
+            r"^[+-]?\s*\d[\d .\u00a0:]*[,.]\s*\d{2}\s*(?:MAD|DH|DHS)?$",
+            re.I,
+        )
+        scale = 3.0
+        # Des bandes qui se chevauchent limitent la taille d'inférence tout en
+        # évitant de couper une opération située exactement sur une frontière.
+        usable_height = max(height - y0, 1)
+        ratios = ((0.00, 0.38), (0.30, 0.68), (0.60, 1.00))
+        collected = []
+        for start_ratio, end_ratio in ratios:
+            band_y0 = y0 + int(usable_height * start_ratio)
+            band_y1 = y0 + int(usable_height * end_ratio)
+            crop = image[band_y0:band_y1, x0:x1]
+            if crop.size == 0:
+                continue
+            enlarged = cv2.resize(
+                crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
+            )
+            for raw in self._prediction_to_lines(self.reader.predict(enlarged)):
+                text = str(raw.get("text") or "").strip()
+                # Corriger uniquement le ':' inséré au milieu d'un montant
+                # (ex. 88:0,00 -> 880,00), jamais une date ou une heure.
+                normalized = re.sub(
+                    r"(?<=\d):(?=\d{1,3}[,.]\s*\d{2}$)", "", text
+                )
+                if not amount_pattern.fullmatch(normalized):
+                    continue
+                line = dict(raw)
+                line["text"] = normalized
+                try:
+                    line["bbox"] = [
+                        [float(point[0]) / scale + x0,
+                         float(point[1]) / scale + band_y0]
+                        for point in raw.get("bbox")
+                    ]
+                except (TypeError, ValueError, IndexError):
+                    continue
+                collected.append(line)
+
+        # Dédupliquer les cellules relues dans le chevauchement des bandes.
+        unique = []
+        for line in sorted(
+            collected,
+            key=lambda item: float(item.get("confidence") or 0),
+            reverse=True,
+        ):
+            center = self._box_center(line.get("bbox"))
+            bounds = self._box_bounds(line.get("bbox"))
+            if center is None or bounds is None:
+                continue
+            if any(
+                self._boxes_same_region(bounds, kept["bounds"])
+                or (
+                    abs(center[0] - kept["center"][0]) <= 10
+                    and abs(center[1] - kept["center"][1]) <= 8
+                )
+                for kept in unique
+            ):
+                continue
+            unique.append({"line": line, "center": center, "bounds": bounds})
+        logger.info(
+            "Relevé : %d cellule(s) monétaire(s) relue(s) dans CREDIT",
+            len(unique),
+        )
+        return [item["line"] for item in unique]
+
+    @classmethod
+    def _merge_statement_credit_lines(cls, base_lines, credit_lines):
+        """Remplace les anciennes lectures de la même cellule puis fusionne."""
+        result = list(base_lines or [])
+        amount_pattern = re.compile(
+            r"^[+-]?\s*\d[\d .\u00a0:]*[,.]\s*\d{2}\s*(?:MAD|DH|DHS)?$",
+            re.I,
+        )
+        for credit in credit_lines or []:
+            credit_center = cls._box_center(credit.get("bbox"))
+            credit_bounds = cls._box_bounds(credit.get("bbox"))
+            if credit_center is None or credit_bounds is None:
+                continue
+            filtered = []
+            for existing in result:
+                existing_text = str(existing.get("text") or "").strip()
+                existing_center = cls._box_center(existing.get("bbox"))
+                existing_bounds = cls._box_bounds(existing.get("bbox"))
+                same_cell = (
+                    amount_pattern.fullmatch(existing_text)
+                    and existing_center is not None
+                    and existing_bounds is not None
+                    and (
+                        cls._boxes_same_region(existing_bounds, credit_bounds)
+                        or (
+                            abs(existing_center[0] - credit_center[0]) <= 24
+                            and abs(existing_center[1] - credit_center[1]) <= 8
+                        )
+                    )
+                )
+                if not same_cell:
+                    filtered.append(existing)
+            filtered.append(credit)
+            result = filtered
+        return result
 
     def _read_statement_regions(self, image):
         """Relit un relevé en bandes agrandies, en gardant sa géométrie."""

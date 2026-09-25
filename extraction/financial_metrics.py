@@ -6,6 +6,7 @@ import logging
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 import calendar
+import hashlib
 from pathlib import Path
 
 CREDIT_CHARGE_PATTERN = (
@@ -95,6 +96,47 @@ def _evidence_item(item, decision="retenu", reason=None):
     if reason:
         result["reason"] = reason
     return result
+
+
+def _credit_candidate_item(item):
+    """Prépare une ligne CREDIT modifiable et confirmable par le client."""
+    description = _norm(item.get("description"))
+    exclusion_reason = _income_exclusion_reason(description)
+    outgoing = _outgoing_description(description)
+    selected = exclusion_reason is None and not outgoing
+    if exclusion_reason:
+        reason = exclusion_reason
+    elif outgoing:
+        reason = "opération sortante ou technique"
+    else:
+        reason = "revenu complémentaire proposé par le système"
+    identity = "|".join((
+        str(item.get("page") or ""),
+        str(item.get("date") or ""),
+        f"{float(_amount(item.get('montant')) or 0.0):.2f}",
+        description,
+        _norm(item.get("quote")),
+    ))
+    return {
+        "candidate_id": hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16],
+        "date": item.get("date"),
+        "description": item.get("description"),
+        "montant": float(_amount(item.get("montant")) or 0.0),
+        "page": item.get("page"),
+        "quote": item.get("quote"),
+        "selected_by_system": selected,
+        "reason": reason,
+    }
+
+
+def _credit_candidate_list(*series):
+    """Retourne toutes les lignes CREDIT détectées, sans doublons OCR."""
+    return [
+        _credit_candidate_item(item)
+        for item in _merge_evidence_series(*series)
+        if _amount(item.get("montant")) is not None
+        and _amount(item.get("montant")) > 0
+    ]
 
 
 def _verified_transactions(transactions, pages):
@@ -269,7 +311,15 @@ def _transaction_date(value, pages):
         return None
     day, month = (int(part) for part in short.groups())
     anchors = _statement_anchor_dates(pages)
-    years = {anchor.year for anchor in anchors}
+    anchor_years = {anchor.year for anchor in anchors}
+    # Un relevé ouvert au 31/12 contient normalement des opérations de
+    # janvier de l'année suivante. Tester aussi les années voisines évite de
+    # dater « 07 01 » en janvier 2019 au lieu de janvier 2020.
+    years = {
+        candidate_year
+        for year in anchor_years
+        for candidate_year in (year - 1, year, year + 1)
+    }
     if not years:
         fallback = _statement_year(pages)
         years = {fallback} if fallback else set()
@@ -309,7 +359,8 @@ def _statement_month(pages):
     opening = re.search(
         # « SOGOE DEPART » est une déformation observée de « SOLDE DEPART ».
         r"(?i)(?:solde|so[a-z]{2,4}e)\s+(?:de\s+)?d[ée]part\s+au.{0,80}?"
-        r"(\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4})",
+        r"(\d{1,2}(?:\s*[./-]\s*|\s+)\d{1,2}"
+        r"(?:\s*[./-]\s*|\s+)\d{2,4})",
         text,
         re.S,
     )
@@ -958,6 +1009,7 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
     """
     eligible = []
     excluded = []
+    model_credit_candidates = []
     expected_month = _statement_month(pages)
     for item in transactions or []:
         if not isinstance(item, dict):
@@ -989,6 +1041,7 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         if (is_credit and day_in_period and amount is not None and amount > 0 and verified):
             candidate = {**item, "montant": amount, "quote": quote,
                          "month": day.strftime("%Y-%m")}
+            model_credit_candidates.append(candidate)
             if exclusion_reason:
                 excluded.append(_evidence_item(candidate, "exclu", exclusion_reason))
             else:
@@ -1037,33 +1090,55 @@ def derive_complementary_income(transactions, pages, document_path, document_sha
         if _income_exclusion_reason(item["description"]) is not None
     ]
     excluded = _merge_evidence_series(marked_excluded, fallback_excluded, excluded)
+    credit_candidates = _credit_candidate_list(
+        marked_candidates,
+        ocr_candidates,
+        fuzzy_candidates,
+        model_credit_candidates,
+    )
     if not eligible:
-        return _zero_proposal(
+        proposal = _zero_proposal(
             transactions, pages, document_path, document_sha256,
             "aucune opération créditrice éligible détectée dans le relevé",
         )
+        if proposal is not None:
+            proposal["source"]["credit_candidates"] = credit_candidates
+        return proposal
     monthly = {}
     for item in eligible:
         monthly[item["month"]] = monthly.get(item["month"], 0.0) + float(item["montant"])
     values = list(monthly.values())
     median = statistics.median(values)
     regularity_proven = len(values) >= 2
-    if median == 0 or (regularity_proven and max(abs(v - median) / median for v in values) > 0.30):
-        return None
+    irregular = (
+        median == 0
+        or (
+            regularity_proven
+            and max(abs(v - median) / median for v in values) > 0.30
+        )
+    )
     first = eligible[0]
     return {
-        "value": float(median),
-        "confidence": 0.60 if regularity_proven else 0.40,
+        # La valeur sert de proposition technique. Dans l'interface, le total
+        # est recalculé depuis les cases ``credit_candidates``. Même lorsque
+        # la régularité n'est pas prouvée, aucune ligne CREDIT ne disparaît.
+        "value": 0.0 if irregular else float(median),
+        "confidence": (
+            0.25 if irregular else (0.60 if regularity_proven else 0.40)
+        ),
         "source": {"document": Path(document_path).name, "sha256": document_sha256,
                    "page": first["page"], "quote": first["quote"], "verified": True,
                    "evidence": [_evidence_item(x) for x in eligible],
                    "excluded_evidence": excluded,
+                   "credit_candidates": credit_candidates,
                    "method": (
+                       "crédits détectés mais irréguliers — sélection du client requise"
+                       if irregular else
                        "entrées créditrices détectées sur un seul relevé — régularité à confirmer"
                        if not regularity_proven else
                        "médiane des crédits mensuels récurrents vérifiés"
                    ),
-                   "regularity_proven": regularity_proven},
+                   "regularity_proven": regularity_proven and not irregular},
     }
 
 
@@ -1072,3 +1147,4 @@ def debt_ratio(net_income, monthly_credit_charge):
     if net <= 0 or charge < 0:
         raise ValueError("Revenu net positif et charges positives requis")
     return charge / net
+
