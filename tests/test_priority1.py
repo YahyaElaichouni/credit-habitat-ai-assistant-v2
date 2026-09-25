@@ -1,6 +1,8 @@
 import csv
 import io
 import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -324,3 +326,55 @@ def test_statement_layout_keeps_adjacent_operations_on_separate_rows(monkeypatch
 
     assert "02/09 | VIREMENT RECU A | CREDIT: 500,00" in rendered
     assert "03/09 | VIREMENT RECU B | CREDIT: 250,00" in rendered
+
+
+def _load_ocr_engine_without_models(monkeypatch, module_name):
+    """Charge le moteur sans importer ni initialiser les modèles PaddleOCR."""
+    import importlib.util
+
+    monkeypatch.setitem(sys.modules, "paddleocr", SimpleNamespace(PaddleOCR=object))
+    monkeypatch.setitem(sys.modules, "ocr.pdf_loader", SimpleNamespace(PDFLoader=object))
+    monkeypatch.setitem(
+        sys.modules,
+        "ocr.preprocessing",
+        SimpleNamespace(ImagePreprocessor=object),
+    )
+    spec = importlib.util.spec_from_file_location(
+        module_name, Path(__file__).parents[1] / "ocr/ocr_engine.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_bulletin_never_runs_statement_credit_pass(monkeypatch):
+    """La relecture CREDIT est strictement réservée aux relevés bancaires."""
+    module = _load_ocr_engine_without_models(monkeypatch, "ocr_bulletin_scope_test")
+    engine = module.OCREngine.__new__(module.OCREngine)
+    engine.preprocessor = SimpleNamespace(preprocess=lambda image: image)
+    engine.reader = SimpleNamespace(predict=lambda image: [{
+        "rec_texts": ["PERIODE", "MATRICULE", "DATE D'EMBAUCHE"],
+        "rec_scores": [0.99, 0.99, 0.99],
+        "rec_polys": [None, None, None],
+    }])
+    engine._read_statement_credit_column = lambda *args: pytest.fail(
+        "la passe CREDIT ne doit pas être appelée pour un bulletin"
+    )
+
+    image = __import__("numpy").zeros((100, 100, 3), dtype="uint8")
+    engine.image_to_text(image, document_type="bulletin")
+
+
+def test_bulletin_region_selection_targets_only_missing_area(monkeypatch):
+    """Le net absent ne déclenche que la moitié basse du bulletin."""
+    module = _load_ocr_engine_without_models(monkeypatch, "ocr_bulletin_regions_test")
+    engine = module.OCREngine.__new__(module.OCREngine)
+    calls = []
+    engine.reader = SimpleNamespace(predict=lambda image: calls.append(image.shape) or [])
+
+    image = __import__("numpy").zeros((100, 80, 3), dtype="uint8")
+    engine._read_bulletin_regions(image, missing_markers=("NET A PAYER",))
+
+    assert len(calls) == 1
+    # Zone 48 %-100 %, agrandie 2,2 fois.
+    assert calls[0][0] in {114, 115}

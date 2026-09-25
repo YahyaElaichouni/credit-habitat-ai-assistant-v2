@@ -84,19 +84,56 @@ class OCREngine:
         processed_text = " ".join(line["text"] for line in processed_lines).upper()
 
         # Les bulletins portrait de faible résolution contiennent plusieurs
-        # tableaux avec une police minuscule. Si la lecture globale perd les
-        # repères essentiels, relire trois bandes agrandies améliore la
-        # détection sans modifier les autres types de documents.
+        # tableaux avec une police minuscule. Ne relire que la partie de page
+        # susceptible de contenir les repères absents ; une relecture complète
+        # reste disponible si cette passe ciblée n'apporte aucune amélioration.
         height, width = image.shape[:2]
         if document_type == "bulletin" and max(height, width) < 1500:
             expected = ("PERIODE", "MATRICULE", "DATE D'EMBAUCHE", "FONCTION", "NET A PAYER")
             normalized = processed_text.replace("É", "E").replace("À", "A")
-            if sum(marker in normalized for marker in expected) < 3:
-                regional_lines = self._read_bulletin_regions(image)
-                if self._business_document_score(regional_lines, "bulletin") > self._business_document_score(processed_lines, "bulletin"):
-                    logger.info("Bulletin petit : lecture ciblée des tableaux retenue")
-                    processed_lines = regional_lines
-                    processed_text = " ".join(line["text"] for line in processed_lines).upper()
+            missing_markers = tuple(
+                marker for marker in expected if marker not in normalized
+            )
+            if len(missing_markers) >= 3:
+                initial_score = self._business_document_score(
+                    processed_lines, "bulletin"
+                )
+                targeted_lines = self._read_bulletin_regions(
+                    image, missing_markers=missing_markers
+                )
+                targeted_result = self._merge_ocr_lines(
+                    processed_lines, targeted_lines
+                )
+                targeted_score = self._business_document_score(
+                    targeted_result, "bulletin"
+                )
+                if targeted_score > initial_score:
+                    logger.info(
+                        "Bulletin petit : relecture ciblée retenue pour %s",
+                        ", ".join(missing_markers),
+                    )
+                    processed_lines = targeted_result
+                    processed_text = " ".join(
+                        line["text"] for line in processed_lines
+                    ).upper()
+                else:
+                    # Cas rare : document atypique ou champs situés hors des
+                    # zones habituelles. On conserve alors le secours complet
+                    # historique afin de ne pas dégrader la qualité.
+                    full_regional_lines = self._read_bulletin_regions(image)
+                    full_result = self._merge_ocr_lines(
+                        processed_lines, full_regional_lines
+                    )
+                    if self._business_document_score(
+                        full_result, "bulletin"
+                    ) > initial_score:
+                        logger.info(
+                            "Bulletin petit : relecture complète de secours retenue"
+                        )
+                        processed_lines = full_result
+                        processed_text = " ".join(
+                            line["text"] for line in processed_lines
+                        ).upper()
 
         # Les fonds colorés et les motifs de sécurité des CNIE peuvent perdre
         # des caractères lors de la binarisation. Pour ces pages seulement,
@@ -189,13 +226,14 @@ class OCREngine:
             # traits voisins qui rendent les petits montants CIH difficiles à
             # reconnaître. Les coordonnées sont remappées sur la page afin de
             # rattacher chaque montant à sa ligne d'opération lors du rendu.
-            credit_lines = self._read_statement_credit_column(
-                image, processed_lines
-            )
-            if credit_lines:
-                processed_lines = self._merge_statement_credit_lines(
-                    processed_lines, credit_lines
+            if document_type == "releve":
+                credit_lines = self._read_statement_credit_column(
+                    image, processed_lines
                 )
+                if credit_lines:
+                    processed_lines = self._merge_statement_credit_lines(
+                        processed_lines, credit_lines
+                    )
 
         return processed_lines
 
@@ -422,10 +460,25 @@ class OCREngine:
                 })
         return [item["line"] for item in unique]
 
-    def _read_bulletin_regions(self, image):
-        """OCR par bandes avec coordonnées remappées sur la page originale."""
+    def _read_bulletin_regions(self, image, missing_markers=None):
+        """Relit uniquement les zones utiles, ou toutes les bandes en secours."""
         height, width = image.shape[:2]
-        regions = ((0.00, 0.38), (0.32, 0.82), (0.74, 1.00))
+        missing = set(missing_markers or ())
+        if missing:
+            upper_markers = {
+                "PERIODE", "MATRICULE", "DATE D'EMBAUCHE", "FONCTION"
+            }
+            regions = []
+            if missing & upper_markers:
+                # Identité professionnelle, période et date d'embauche sont
+                # généralement regroupées dans les deux premiers tiers.
+                regions.append((0.00, 0.70))
+            if "NET A PAYER" in missing:
+                # Le net se trouve habituellement dans la moitié inférieure.
+                regions.append((0.48, 1.00))
+            regions = tuple(regions)
+        else:
+            regions = ((0.00, 0.38), (0.32, 0.82), (0.74, 1.00))
         collected = []
         scale = 2.2
         for start_ratio, end_ratio in regions:
@@ -476,6 +529,29 @@ class OCREngine:
             line.pop("_normalized_text", None)
             line.pop("_center", None)
         return unique
+
+    @classmethod
+    def _merge_ocr_lines(cls, base_lines, extra_lines):
+        """Fusionne deux lectures en conservant la meilleure par zone."""
+        candidates = list(base_lines or []) + list(extra_lines or [])
+        kept = []
+        for line in sorted(
+            candidates,
+            key=lambda item: float(item.get("confidence") or 0),
+            reverse=True,
+        ):
+            text = str(line.get("text") or "").strip()
+            bounds = cls._box_bounds(line.get("bbox"))
+            if not text:
+                continue
+            if bounds is not None and any(
+                cls._boxes_same_region(bounds, item["bounds"])
+                for item in kept
+                if item["bounds"] is not None
+            ):
+                continue
+            kept.append({"line": dict(line), "bounds": bounds})
+        return [item["line"] for item in kept]
 
     @staticmethod
     def _box_center(box):
