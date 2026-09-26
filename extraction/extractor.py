@@ -15,9 +15,12 @@ from pydantic import BaseModel, ValidationError
 from extraction.prompts import (
     SYSTEM_PROMPT,
     DOCUMENT_PROMPTS,
+    RELEVE_TRANSACTIONS_FALLBACK_PROMPT,
 )
 from extraction.schema import (
     DOCUMENT_SCHEMAS,
+    LLM_DOCUMENT_SCHEMAS,
+    ReleveTransactionsFallbackSchema,
     extract_confidences,
     flatten,
 )
@@ -71,6 +74,21 @@ class DocumentExtractor:
             )
 
         return DOCUMENT_SCHEMAS[document_type]
+
+    def get_llm_schema(
+        self,
+        document_type: str,
+    ) -> Type[BaseModel]:
+        """Retourner le schéma compact envoyé à Ollama.
+
+        Le schéma final reste celui de ``DOCUMENT_SCHEMAS``. Cette séparation
+        évite notamment de demander au modèle de recopier toutes les lignes
+        d'un relevé alors qu'elles sont déjà analysées depuis l'OCR.
+        """
+
+        if document_type not in LLM_DOCUMENT_SCHEMAS:
+            raise ValueError(f"Type de document inconnu : {document_type}")
+        return LLM_DOCUMENT_SCHEMAS[document_type]
 
     # =====================================================
     # CRÉATION DU PROMPT
@@ -147,6 +165,7 @@ class DocumentExtractor:
 
                 # Le modèle doit respecter le schéma Pydantic.
                 format=json_schema,
+                keep_alive="30m",
 
                 # Configuration stable pour l'extraction documentaire.
                 options={
@@ -154,7 +173,14 @@ class DocumentExtractor:
                     "top_p": 0.1,
                 },
             )
-
+            logger.info(
+            "Ollama — chargement %.2f s | prompt %.2f s | "
+            "génération %.2f s | %s tokens",
+            response.get("load_duration", 0) / 1_000_000_000,
+            response.get("prompt_eval_duration", 0) / 1_000_000_000,
+            response.get("eval_duration", 0) / 1_000_000_000,
+            response.get("eval_count", 0),
+)
         except Exception as error:
             logger.exception(
                 "[DocumentExtractor] Échec de l'appel Ollama "
@@ -278,7 +304,7 @@ class DocumentExtractor:
         # 1. Récupérer le schéma correspondant au document
         # -------------------------------------------------
 
-        schema = self.get_schema(
+        llm_schema = self.get_llm_schema(
             document_type
         )
 
@@ -297,7 +323,7 @@ class DocumentExtractor:
 
         response = self.call_llm(
             prompt=prompt,
-            schema=schema,
+            schema=llm_schema,
         )
 
         # -------------------------------------------------
@@ -379,3 +405,25 @@ class DocumentExtractor:
             "confidences": extract_confidences(result),
             "raw": result.model_dump(),
         }
+
+    def extract_statement_transactions_fallback(
+        self,
+        ocr_text: str,
+    ) -> list[Dict[str, Any]]:
+        """Relire seulement les opérations utiles d'un relevé difficile.
+
+        Cette passe n'est pas utilisée lors du parcours normal. Elle est
+        déclenchée par ``ExtractionAgent`` uniquement lorsque les extracteurs
+        OCR déterministes n'ont trouvé aucune preuve exploitable.
+        """
+
+        prompt = RELEVE_TRANSACTIONS_FALLBACK_PROMPT.format(
+            ocr_text=wrap_as_data(ocr_text)
+        )
+        response = self.call_llm(
+            prompt=prompt,
+            schema=ReleveTransactionsFallbackSchema,
+        )
+        data = self.parse_json(response)
+        validated = ReleveTransactionsFallbackSchema.model_validate(data)
+        return [item.model_dump() for item in validated.transactions]

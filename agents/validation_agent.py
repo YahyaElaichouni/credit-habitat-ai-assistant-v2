@@ -238,7 +238,10 @@ class ValidationAgent:
 
         for field_name, value in data.items():
 
-            if field_name == "document_type":
+            # ``transactions`` est une structure technique utilisée par les
+            # calculs serveur. Elle n'est ni un champ à pré-remplir ni une
+            # information que l'utilisateur doit valider individuellement.
+            if field_name in {"document_type", "transactions"}:
                 continue
 
             confidence = confidences.get(field_name)
@@ -276,4 +279,3 @@ class ValidationAgent:
             }
 
         return decisions
-

@@ -8,7 +8,12 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from extraction.schema import DOCUMENT_SCHEMAS, ExtractedField, ReleveBancaireSchema
+from extraction.schema import (
+    DOCUMENT_SCHEMAS,
+    LLM_DOCUMENT_SCHEMAS,
+    ExtractedField,
+    ReleveBancaireSchema,
+)
 from extraction.provenance import verify_sources, page_text
 from extraction.confirmation import make_confirmation, parse_confirmed_value, export_confirmed_csv
 
@@ -39,6 +44,74 @@ def test_required_schemas_and_prompts():
     assert "source" in SYSTEM_PROMPT
     fields = ReleveBancaireSchema.model_fields
     assert "charge_mensuelle_credits" in fields and "revenus_complementaires" in fields
+
+
+def test_statement_llm_schema_is_lightweight_but_final_schema_is_complete():
+    llm_fields = LLM_DOCUMENT_SCHEMAS["releve"].model_fields
+    assert set(llm_fields) == {
+        "document_type", "banque", "periode_debut", "periode_fin"
+    }
+    assert "transactions" in ReleveBancaireSchema.model_fields
+    assert "revenus_complementaires" in ReleveBancaireSchema.model_fields
+
+
+def test_statement_extraction_uses_lightweight_schema(monkeypatch):
+    from extraction.extractor import DocumentExtractor
+
+    seen = {}
+
+    def fake_call(self, prompt, schema):
+        seen["schema"] = schema
+        return json.dumps({
+            "banque": {"value": "CIH", "confidence": 0.99, "source": None},
+            "periode_debut": {"value": None, "confidence": 0.0, "source": None},
+            "periode_fin": {"value": None, "confidence": 0.0, "source": None},
+        })
+
+    monkeypatch.setattr(DocumentExtractor, "call_llm", fake_call)
+    result = DocumentExtractor().extract("[PAGE 1]\nCIH BANK", "releve")
+
+    assert seen["schema"] is LLM_DOCUMENT_SCHEMAS["releve"]
+    assert result.transactions == []
+    assert result.charge_mensuelle_credits.value is None
+
+
+def test_transactions_are_not_sent_to_human_field_validation():
+    from agents.validation_agent import ValidationAgent
+
+    result = ValidationAgent().run(
+        "releve",
+        {"transactions": [], "revenus_complementaires": None},
+        {"transactions": None, "revenus_complementaires": None},
+        {},
+    )
+
+    assert "transactions" not in result["fields"]
+
+
+def test_statement_fallback_is_only_needed_without_financial_evidence():
+    from agents.extraction_agent import _needs_statement_fallback
+
+    complete = {
+        "revenus_complementaires": {
+            "source": {"credit_candidates": [{"montant": 500.0}]}
+        },
+        "charge_mensuelle_credits": {"source": {"evidence": []}},
+    }
+    assert not _needs_statement_fallback(complete, "VIREMENT RECU")
+
+    assert _needs_statement_fallback(
+        {
+            "revenus_complementaires": {"source": {"credit_candidates": []}},
+            "charge_mensuelle_credits": {"source": {"evidence": []}},
+        },
+        "CREDIT",
+    )
+
+    assert _needs_statement_fallback(
+        complete,
+        "REMBOURSEMENT ECHEANCE 1 534,75",
+    )
 
 
 @pytest.mark.parametrize("value,expected", [("6 500,50", 6500.5), ("0", 0.0), ("6\u202f000", 6000.0)])
@@ -130,7 +203,7 @@ def test_pipeline_provenance_and_audit(tmp_path, monkeypatch):
     # Only OCR and inference are substituted: validation, graph and SQLite are real.
     monkeypatch.setattr(wf, "_ocr_agent", SimpleNamespace(execute_pages=lambda p: [
         {"page": 1, "text": "Entête fictive"}, {"page": 2, "text": "Net 6000 MAD"}]))
-    monkeypatch.setattr(DocumentExtractor, "call_llm", lambda self, prompt: json.dumps({
+    monkeypatch.setattr(DocumentExtractor, "call_llm", lambda self, prompt, schema: json.dumps({
         "salaire_net": {"value": 6000, "confidence": 0.95,
                         "source": {"page": 2, "quote": "Net 6000 MAD"}}}))
     path = tmp_path / "fictif.pdf"

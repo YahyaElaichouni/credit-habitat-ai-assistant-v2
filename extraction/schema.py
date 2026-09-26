@@ -192,6 +192,27 @@ class ReleveBancaireSchema(BaseModel):
     revenus_complementaires: MonetaryField = Field(default_factory=MonetaryField)
 
 
+class ReleveLLMSchema(BaseModel):
+    """Sortie minimale demandée au LLM pour un relevé bancaire.
+
+    Les transactions et les métriques financières sont extraites ensuite par
+    les traitements déterministes à partir des pages OCR. Les retirer du
+    schéma Ollama évite de générer plusieurs milliers de tokens sans modifier
+    le schéma final exposé au reste de l'application.
+    """
+
+    document_type: str = "releve"
+    banque: ExtractedField[str] = Field(default_factory=ExtractedField)
+    periode_debut: ExtractedField[str] = Field(default_factory=ExtractedField)
+    periode_fin: ExtractedField[str] = Field(default_factory=ExtractedField)
+
+
+class ReleveTransactionsFallbackSchema(BaseModel):
+    """Opérations utiles demandées uniquement lorsque l'OCR direct échoue."""
+
+    transactions: List[Transaction] = Field(default_factory=list)
+
+
 # =========================================================
 # COMPROMIS DE VENTE
 # =========================================================
@@ -231,6 +252,15 @@ DOCUMENT_SCHEMAS = {
     "releve": ReleveBancaireSchema,
 
     "compromis": CompromisSchema
+}
+
+
+# Schémas réellement transmis au LLM. Par défaut, le schéma d'extraction et
+# le schéma final sont identiques. Seul le relevé utilise une sortie allégée :
+# les opérations bancaires restent traitées côté serveur depuis l'OCR.
+LLM_DOCUMENT_SCHEMAS = {
+    **DOCUMENT_SCHEMAS,
+    "releve": ReleveLLMSchema,
 }
 
 

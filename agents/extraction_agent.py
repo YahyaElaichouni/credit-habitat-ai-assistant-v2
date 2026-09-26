@@ -6,6 +6,8 @@ Projet PFE Crédit Agricole du Maroc
 """
 
 import logging
+import re
+import unicodedata
 from typing import Any, Dict
 
 from config.settings import settings
@@ -16,6 +18,32 @@ from extraction.financial_metrics import derive_monthly_credit_charge, derive_co
 from rule_engine.checks import RULES
 
 logger = logging.getLogger(__name__)
+
+
+def _normalized_text(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(char for char in text if not unicodedata.combining(char)).lower()
+
+
+def _needs_statement_fallback(metrics: Dict[str, Any], ocr_text: str) -> bool:
+    """Déclencher la passe LLM ciblée seulement si les preuves font défaut."""
+
+    income = metrics.get("revenus_complementaires") or {}
+    income_source = income.get("source") or {}
+    candidates = income_source.get("credit_candidates") or []
+    evidence = income_source.get("evidence") or []
+    missing_income = not candidates and not evidence
+
+    charge = metrics.get("charge_mensuelle_credits") or {}
+    charge_source = charge.get("source") or {}
+    charge_evidence = charge_source.get("evidence") or []
+    normalized = _normalized_text(ocr_text)
+    debt_hint = bool(re.search(
+        r"\b(?:echeance|mensualite|remb\w*\s+ech|prlv\w*|prelevement)\b",
+        normalized,
+    ))
+    missing_expected_charge = debt_hint and not charge_evidence
+    return missing_income or missing_expected_charge
 
 
 class ExtractionAgent:
@@ -119,6 +147,40 @@ class ExtractionAgent:
                     transactions, pages or [], document_path, document_sha256,
                 ),
             }
+
+            if _needs_statement_fallback(derived_metrics, ocr_text):
+                try:
+                    fallback_transactions = (
+                        self.extractor.extract_statement_transactions_fallback(
+                            ocr_text
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "[ExtractionAgent] Passe ciblée du relevé indisponible ; "
+                        "les résultats OCR déterministes sont conservés.",
+                        exc_info=True,
+                    )
+                else:
+                    if fallback_transactions:
+                        logger.info(
+                            "[ExtractionAgent] Relevé difficile : %s opération(s) "
+                            "utile(s) récupérée(s) par la passe ciblée.",
+                            len(fallback_transactions),
+                        )
+                        transactions = fallback_transactions
+                        extraction_result["data"]["transactions"] = transactions
+                        extraction_result["raw"]["transactions"] = transactions
+                        derived_metrics = {
+                            "charge_mensuelle_credits": derive_monthly_credit_charge(
+                                transactions, pages or [], document_path,
+                                document_sha256,
+                            ),
+                            "revenus_complementaires": derive_complementary_income(
+                                transactions, pages or [], document_path,
+                                document_sha256,
+                            ),
+                        }
             for field_name, derived in derived_metrics.items():
                 if not derived:
                     extraction_result["data"][field_name] = None

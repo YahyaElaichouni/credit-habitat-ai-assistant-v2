@@ -236,13 +236,13 @@ Texte OCR :
 
 RELEVE_PROMPT = """
 Le document est un relevé bancaire marocain, éventuellement bilingue.
-Le séparateur " | " représente les cellules d'une même ligne. Respecte
-impérativement les colonnes DEBIT et CREDIT.
+Extrais uniquement banque, periode_debut et periode_fin au format
+{{ "value": ..., "confidence": ..., "source": ... }}.
 
-Extrais au format {{ "value": ..., "confidence": ..., "source": ... }} :
-banque, periode_debut et periode_fin.
-charge_mensuelle_credits et revenus_complementaires restent toujours null :
-ils sont calculés côté serveur à partir des transactions prouvées.
+N'extrais pas les transactions, les charges mensuelles ou les revenus
+complémentaires : ces éléments sont calculés côté serveur directement depuis
+les lignes OCR. Cette consigne est volontaire et ne signifie pas que les
+opérations absentes de la réponse doivent être ignorées.
 
 - banque : prends uniquement le nom de l'établissement dans l'en-tête. Ne
   prends jamais une banque citée dans le libellé d'une transaction.
@@ -254,74 +254,34 @@ ils sont calculés côté serveur à partir des transactions prouvées.
 - Ignore le titulaire, l'adresse, l'agence, le numéro de compte, le RIB,
   l'IBAN, les soldes et la devise : ils ne sont pas utiles à la simulation.
 
-LECTURE DES TABLEAUX
+Chaque source doit citer une courte ligne réellement présente dans le texte
+OCR et indiquer son numéro de page. Si une information est absente, ambiguë
+ou non prouvée, retourne value: null, confidence: 0.0 et source: null.
 
-A. Identifie d'abord l'ordre réel des colonnes : Date opération, Date valeur,
-   Libellé/Opération-Référence, Débit, Crédit. Cet ordre varie selon la banque.
-B. date est la date d'opération. Si elle manque mais que date valeur est
-   présente, conserve date valeur avec une confiance faible ; ne fusionne pas
-   les deux dates en une chaîne.
-C. montant est le nombre de la colonne Débit ou Crédit de la même ligne.
-   type="debit" pour Débit et type="credit" pour Crédit, en minuscules.
-D. Une ligne "TOTAL MOUVEMENTS" n'est pas une transaction. Une ligne de
-   solde initial/final n'est pas une transaction.
-E. Les lignes visuelles peuvent être coupées par l'OCR. Rattache une ligne
-   suivante uniquement si elle n'a aucune date et prolonge clairement le
-   libellé précédent. Sinon, conserve deux éléments distincts ou ignore la
-   ligne ambiguë.
-F. Ne calcule aucune métrique dans le modèle : extrais fidèlement toutes les
-   opérations et leur colonne Débit/Crédit. Le serveur additionne ensuite les
-   crédits vérifiés en excluant salaire et opérations techniques, et reconnaît
-   les charges de prêt par familles de libellés.
-G. Chaque transaction doit garder page et quote. quote doit reproduire la
-   ligne OCR complète contenant date, libellé et montant.
+Texte OCR :
 
-1. Une période explicitement affichée sous la forme "Du [date] Au [date]"
-   alimente periode_debut et periode_fin. "EXTRAIT DE COMPTE AU [date]" ou
-   "NOUVEAU SOLDE AU [date]" alimente periode_fin, mais "ANCIEN SOLDE AU"
-   ne l'alimente jamais. Sinon, ne déduis pas automatiquement la période
-   depuis les dates des opérations.
-2. Les lignes de solde initial/final et de total de mouvements servent à
-   comprendre le tableau, mais ne doivent jamais devenir des transactions.
+{ocr_text}
+"""
 
-EXEMPLES DE TRANSACTIONS
 
-"02/10/2023 | FRAIS DE TENUE DE COMPTE | 01/10/2023 | 49,50 |"
--> date="02/10/2023", description="FRAIS DE TENUE DE COMPTE",
-   montant=49.5, type="debit".
+RELEVE_TRANSACTIONS_FALLBACK_PROMPT = """
+Le document est un relevé bancaire marocain. Le traitement automatique n'a
+pas réussi à reconstruire toutes les opérations utiles depuis les colonnes.
 
-"09/10/2023 | VERSEMENT ESP EL HADARI | 10/10/2023 | | 5 000,00"
--> date="09/10/2023", description="VERSEMENT ESP EL HADARI",
-   montant=5000.0, type="credit".
+Retourne uniquement une liste `transactions` contenant :
+- toutes les lignes dont le montant se trouve réellement dans la colonne
+  CREDIT ;
+- parmi les lignes DEBIT, uniquement les échéances ou prélèvements de prêt,
+  crédit ou financement clairement identifiables.
 
-"TOTAL MOUVEMENT | 8 754,50 | 11 510,80"
--> ne pas ajouter dans transactions.
+Pour chaque ligne, retourne directement : date, description, montant, type,
+page et quote. `type` vaut `credit` ou `debit` selon la colonne visuelle, jamais
+selon le vocabulaire du libellé. Le montant reste positif. `quote` doit être
+une citation exacte de la ligne OCR comportant le libellé et le montant.
 
-Extrais transactions avec : date, description, montant, type, page, quote.
-
-IMPORTANT : dans "transactions", retourne directement des valeurs simples.
-Exemple valide :
-{{"date": "25/12/2024", "description": "VIREMENT EMIS", "montant": 700.0,
-  "type": "debit", "page": 1, "quote": "ligne OCR complète"}}
-N'utilise jamais {{"value", "confidence", "source"}} à l'intérieur d'une
-transaction. Ce format est réservé aux champs racine du relevé.
-
-REGLES DE TRANSACTION
-
-1. Une valeur sous DEBIT donne type="debit" ; sous CREDIT, type="credit".
-   Le mot "crédit" dans le libellé ne détermine jamais le sens.
-2. Conserve un montant positif ; type porte le sens.
-3. Regroupe seulement les cellules de la même ligne visuelle.
-4. N'inclus pas les totaux de mouvements et les soldes comme transactions.
-5. quote reprend la ligne OCR complète avec les séparateurs " | ".
-6. Le salaire est une transaction de crédit, jamais un revenu complémentaire.
-7. Retraits, paiements carte et frais ne sont pas des mensualités de crédit.
-   Une charge exige un libellé explicite d'échéance, prêt ou mensualité.
-8. Extrais toutes les occurrences, même lorsqu'un même libellé ou bénéficiaire
-   apparaît plusieurs fois. Ne t'arrête jamais à la première transaction.
-
-Si une information est absente ou illisible, retourne null. N'invente aucune
-transaction.
+N'inclus jamais les soldes initiaux ou finaux, les totaux de mouvements, les
+paiements carte, retraits ou frais ordinaires. N'invente aucune ligne. Si
+aucune opération demandée n'est prouvée, retourne une liste vide.
 
 Texte OCR :
 

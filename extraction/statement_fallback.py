@@ -522,7 +522,6 @@ def fill_missing_statement_fields(data: Dict[str, Any], ocr_text: str) -> Dict[s
     if account:
         _put(result, "numero_compte", re.sub(r"\s+", "", account.group(1)), ocr_text, account)
 
-    # Un RIB marocain n'est pas un IBAN : le champ iban reste vide sans
     # libellé IBAN explicite.
     iban = re.search(r"\bIBAN\s*:\s*([A-Z]{2}[0-9A-Z ]{13,34})", ocr_text, re.I)
     if iban:
