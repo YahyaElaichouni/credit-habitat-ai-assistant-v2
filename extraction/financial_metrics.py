@@ -36,14 +36,6 @@ INCOMING_OPERATION_PATTERN = (
     r"pension|loyer|prime|distribution|dividende|benefice)\w*\b"
     r"|\binteret\s+crediteur\b"
 )
-EXTRA_INCOME_EXCLUDED = (
-    "salaire", "paie", "remboursement", "rembourse", "annulation", "contrepassation",
-    "mutuelle", "indemnite", "indemnisation", "restitution", "regularisation",
-    "solde initial", "solde depart", "solde precedent", "solde au",
-    "ancien solde", "nouveau solde", "total mouvement",
-    "virement emis", "commission", "retrait", "frais", "paiement",
-)
-
 EXTRA_INCOME_EXCLUSION_REASONS = (
     (("solde initial", "solde depart", "solde precedent", "ancien solde", "nouveau solde", "solde au"),
      "solde du compte, pas un revenu"),
@@ -137,18 +129,6 @@ def _credit_candidate_list(*series):
         if _amount(item.get("montant")) is not None
         and _amount(item.get("montant")) > 0
     ]
-
-
-def _verified_transactions(transactions, pages):
-    """Transactions dont la citation est réellement présente sur la page OCR."""
-    page_map = {p["page"]: _norm(p["text"]) for p in pages}
-    verified = []
-    for item in transactions or []:
-        page, quote = item.get("page"), item.get("quote")
-        if (type(page) is int and page in page_map and isinstance(quote, str)
-                and _norm(quote) and _norm(quote) in page_map[page]):
-            verified.append(item)
-    return verified
 
 
 def _norm(value):

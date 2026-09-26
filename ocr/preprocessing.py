@@ -9,10 +9,6 @@ import cv2
 
 
 class ImagePreprocessor:
-
-    def __init__(self):
-        pass
-
     # ======================================================
     # Niveaux de gris
     # ======================================================
@@ -69,21 +65,6 @@ class ImagePreprocessor:
             255,
             cv2.THRESH_BINARY + cv2.THRESH_OTSU
         )[1]
-
-
-    # ======================================================
-    # Redimensionnement
-    # ======================================================
-
-    def resize(self, image, scale=2):
-
-        return cv2.resize(
-            image,
-            None,
-            fx=scale,
-            fy=scale,
-            interpolation=cv2.INTER_CUBIC
-        )
 
 
     # ======================================================

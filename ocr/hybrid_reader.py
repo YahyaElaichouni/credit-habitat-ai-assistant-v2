@@ -95,7 +95,10 @@ class HybridReader:
                     # Conserver la géométrie : indispensable pour ne pas
                     # mélanger les colonnes Gains/Déductions d'un bulletin
                     # ou Débit/Crédit d'un relevé bancaire.
-                    text = ocr.lines_to_layout_text(lines)
+                    text = ocr.lines_to_layout_text(
+                        lines,
+                        document_type=document_type,
+                    )
                     mode = 'OCR'
                 # Même contrat que l'ancien lecteur, pages vides comprises.
                 pages.append({'page': number, 'text': text})

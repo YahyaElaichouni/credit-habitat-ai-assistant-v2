@@ -695,9 +695,25 @@ class OCREngine:
             return "\n".join(text for _, text in sorted(fallback))
 
         typical_height = statistics.median(item["height"] for item in positioned)
+        normalized_labels = {
+            re.sub(
+                r"[^a-z]+",
+                " ",
+                unicodedata.normalize("NFKD", item["text"])
+                .encode("ascii", "ignore")
+                .decode()
+                .casefold(),
+            ).strip()
+            for item in positioned
+        }
+        statement_layout = document_type == "releve" or (
+            document_type is None
+            and any(re.search(r"\bdebit\b", label) for label in normalized_labels)
+            and any(re.search(r"\bcredit\b", label) for label in normalized_labels)
+        )
         # La tolérance stricte évite de fusionner deux opérations CIH, mais
         # elle ne doit pas modifier la reconstruction historique des bulletins.
-        tolerance_factor = 0.38 if document_type == "releve" else 0.60
+        tolerance_factor = 0.38 if statement_layout else 0.60
         tolerance = max(3.0, typical_height * tolerance_factor)
         rows = []
         for item in sorted(positioned, key=lambda value: (value["y"], value["x"])):
