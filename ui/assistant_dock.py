@@ -116,16 +116,13 @@ def render_assistant_dock(advisor_id):
         history = complete_history if expanded else complete_history[-6:]
         if not history:
             st.write(
-                "Bonjour ! Je vais vous accompagner étape par étape. "
-                "Vous pouvez commencer par me parler de votre profession "
-                "et de votre projet immobilier."
+                "Bonjour ! Je suis Nour. Comment puis-je vous aider aujourd’hui ? "
+                "Posez-moi une question ou demandez une estimation si vous le souhaitez."
             )
             suggestions = {
-                "Décrire ma situation": (
-                    "Je souhaite préparer mon projet de crédit habitat."
-                ),
+                "Faire une estimation": "Je voudrais faire une estimation de crédit habitat.",
                 "Documents à préparer": "Quels documents dois-je préparer pour ma simulation ?",
-                "Estimer ma mensualité": "Comment est calculée la mensualité de mon crédit habitat ?",
+                "Comprendre la mensualité": "Comment est calculée la mensualité de mon crédit habitat ?",
             }
             selected = st.pills(
                 "Questions suggérées",

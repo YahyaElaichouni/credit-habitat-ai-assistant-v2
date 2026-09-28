@@ -8,6 +8,7 @@ décisions bancaires inventées.
 import json
 import logging
 import re
+import unicodedata
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
@@ -104,10 +105,26 @@ class GuidanceAgent:
             raise ValueError("Le message est vide.")
 
         current_profile = self.normalize_profile(profile)
+        history = conversation_history or []
+        normalized_message = self._plain_text(message)
+        estimation_requested = bool(re.search(
+            r"\b(?:estim(?:er|ation|e)|simul(?:er|ation|e)|"
+            r"calcul(?:er|e) (?:ma |une |la )?mensualite|"
+            r"calcul(?:er|e) (?:ma |la )?capacite d emprunt)\b",
+            normalized_message,
+        )) and not bool(re.match(
+            r"^(?:comment|quel(?:s|le|les)?|quels|pourquoi|est ce que|"
+            r"combien de|ou|quand)\b",
+            normalized_message,
+        ))
+        guiding = estimation_requested or any(
+            isinstance(exchange, dict) and exchange.get("mode") == "guidance"
+            for exchange in history
+        )
         expected_field = self.next_missing_field(current_profile)
         simulation_updates = self._extract_simulation_follow_up(
             message,
-            conversation_history or [],
+            history,
         )
         if simulation_updates:
             updates = self._validate_updates(simulation_updates)
@@ -122,6 +139,47 @@ class GuidanceAgent:
                 "profile": updated_profile,
                 "profile_updates": updates,
                 "missing_fields": self.missing_fields(updated_profile),
+                "next_field": expected_field,
+                "profile_complete": expected_field is None,
+            }
+
+        if not guiding:
+            if re.fullmatch(
+                r"(?:bonjour|bonsoir|salut|hello|coucou|salam|merci|"
+                r"ca va|comment ca va|qui es tu|tu fais quoi)[ !?.]*",
+                normalized_message,
+            ):
+                return {
+                    "mode": "conversation",
+                    "answer": (
+                        "Bonjour ! Je suis Nour, votre assistant pour le crédit "
+                        "habitat. Comment puis-je vous aider aujourd’hui ?"
+                    ),
+                    "in_scope": True,
+                    "sources": [],
+                    "passages": [],
+                    "profile": current_profile,
+                    "profile_updates": {},
+                }
+            return {"mode": "rag", "profile": current_profile, "profile_updates": {}}
+
+        if estimation_requested and not any(
+            isinstance(exchange, dict) and exchange.get("mode") == "guidance"
+            for exchange in history
+        ):
+            return {
+                "mode": "guidance",
+                "answer": (
+                    "Bien sûr, préparons votre estimation ensemble. "
+                    + (QUESTIONS[expected_field] if expected_field else
+                       "Vous pouvez ouvrir « Estimation rapide » pour consulter votre résultat.")
+                ),
+                "in_scope": True,
+                "sources": [],
+                "passages": [],
+                "profile": current_profile,
+                "profile_updates": {},
+                "missing_fields": self.missing_fields(current_profile),
                 "next_field": expected_field,
                 "profile_complete": expected_field is None,
             }
@@ -171,6 +229,13 @@ class GuidanceAgent:
             "next_field": missing_field,
             "profile_complete": missing_field is None,
         }
+
+    @staticmethod
+    def _plain_text(message: str) -> str:
+        normalized = unicodedata.normalize("NFKD", message.lower())
+        return " ".join(
+            "".join(c for c in normalized if not unicodedata.combining(c)).split()
+        )
 
     @staticmethod
     def normalize_profile(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
