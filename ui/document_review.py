@@ -59,7 +59,7 @@ def render_declared_form(document_type, client_id, key_suffix=""):
             value = st.number_input(label, value=None, min_value=0.0, key=key)
         else:
             value = st.text_input(label, key=key,
-                                  help="JJ/MM/AAAA ou AAAA-MM-JJ" if field in DATE_FIELDS else None)
+                                  help="JJ/MM/AAAA ou AAAA-MM-JJ " if field in DATE_FIELDS else None)
         if value is not None and value != "":
             values[field] = value
     return values
@@ -272,7 +272,7 @@ def render_document_review(
             if source.get("page"):
                 st.caption(f"Trouvé à la page {source['page']}")
 
-            with st.expander("Voir le détail du calcul"):
+            with st.expander("cliquez ici pour voir le détail du calcul"):
                 st.caption(
                     "Le système présélectionne les revenus probables. "
                     "Cochez ou décochez une opération : le montant total "
@@ -369,7 +369,7 @@ def render_document_review(
             excluded = source.get("excluded_evidence") or []
             method = source.get("method")
             if evidence or excluded or method:
-                with st.expander("Voir le détail du calcul"):
+                with st.expander("cliquez ici pour voir le détail du calcul"):
                     if method:
                         st.caption(method)
                     for item in evidence:
@@ -424,7 +424,7 @@ def render_document_review(
 
             if additional_fields:
                 with st.expander(
-                    "Voir les autres informations"
+                    "cliquez ici pour voir les autres informations"
                 ):
                     for name in additional_fields:
                         render_field(name)
