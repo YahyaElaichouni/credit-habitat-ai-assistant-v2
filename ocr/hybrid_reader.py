@@ -24,19 +24,56 @@ class HybridReader:
         self.dpi = dpi
         self.max_ocr_side = max_ocr_side
 
-    def _render_for_ocr(self, document, page):
+    def _side_limit(self, document_type=None):
+        """Limiter les pixels selon le niveau de détail utile au document."""
+        limits = {
+            "carte_identite": 1600,
+            "bulletin": 1800,
+            # Les opérations d'un relevé sont plus nombreuses et plus petites.
+            "releve": 2000,
+            "compromis": 2000,
+        }
+        return min(self.max_ocr_side, limits.get(document_type, self.max_ocr_side))
+
+    def _render_for_ocr(self, document, page, document_type=None):
         """Rend sans agrandir artificiellement les images déjà matricielles."""
+        longest_page_side = max(float(page.rect.width), float(page.rect.height), 1.0)
+        side_limit = self._side_limit(document_type)
         if not document.is_pdf:
             # PNG/JPEG : matrice 1 = résolution native. L'ancien dpi=300
             # multipliait inutilement largeur et hauteur par environ 3,125.
-            scale = 1.0
+            # Une très grande photo est maintenant réduite avant PaddleOCR.
+            scale = min(1.0, side_limit / longest_page_side)
         else:
             requested_scale = self.dpi / 72.0
-            longest_page_side = max(float(page.rect.width), float(page.rect.height), 1.0)
-            scale = min(requested_scale, self.max_ocr_side / longest_page_side)
+            scale = min(requested_scale, side_limit / longest_page_side)
         return page.get_pixmap(
             matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False
         )
+
+    @staticmethod
+    def _trim_blank_margins(image, padding=12):
+        """Retirer seulement les bordures presque blanches autour du contenu."""
+        import numpy as np
+
+        if image.size == 0:
+            return image
+        gray = image.min(axis=2) if image.ndim == 3 else image
+        content = gray < 248
+        rows, columns = np.where(content)
+        if not len(rows) or not len(columns):
+            return image
+
+        height, width = image.shape[:2]
+        y0 = max(0, int(rows.min()) - padding)
+        y1 = min(height, int(rows.max()) + padding + 1)
+        x0 = max(0, int(columns.min()) - padding)
+        x1 = min(width, int(columns.max()) + padding + 1)
+
+        # Éviter un recadrage imperceptible qui ne ferait que copier l'image.
+        if (y1 - y0) * (x1 - x0) >= height * width * 0.97:
+            return image
+        return image[y0:y1, x0:x1].copy()
 
     def _get_ocr(self):
         # Aucun import PaddleOCR ni chargement de modèle pour un PDF numérique.
@@ -80,11 +117,23 @@ class HybridReader:
                 else:
                     logger.info('Lecture page %d/%d — OCR en cours', number, total)
                     import numpy as np
-                    pix = self._render_for_ocr(document, page)
+                    pix = self._render_for_ocr(
+                        document, page, document_type=document_type
+                    )
                     image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
                         pix.height, pix.width, 3).copy()
+                    rendered_shape = image.shape[:2]
+                    image = self._trim_blank_margins(image)
                     logger.info(
-                        'Image OCR page %d : %dx%d pixels', number, pix.width, pix.height
+                        'Image OCR page %d : %dx%d pixels%s',
+                        number,
+                        image.shape[1],
+                        image.shape[0],
+                        (
+                            ' (marges retirées depuis %dx%d)' %
+                            (rendered_shape[1], rendered_shape[0])
+                            if image.shape[:2] != rendered_shape else ''
+                        ),
                     )
                     ocr = self._get_ocr()
                     lines = (

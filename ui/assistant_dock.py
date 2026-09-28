@@ -55,6 +55,7 @@ def apply_assistant_result(result):
     st.session_state.quick_project = project
 
 
+@st.fragment
 def render_assistant_dock(advisor_id):
     """Afficher un assistant flottant lisible sur ordinateur et mobile."""
     robot_path = Path(__file__).resolve().parents[1] / "assets" / "assistant_habitat_robot.png"

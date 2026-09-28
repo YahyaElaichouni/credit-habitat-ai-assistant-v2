@@ -7,6 +7,8 @@ Projet PFE Crédit Agricole du Maroc
 
 import json
 import logging
+from copy import deepcopy
+from functools import lru_cache
 from typing import Any, Dict, Type
 
 import ollama
@@ -31,6 +33,37 @@ from extraction.statement_fallback import fill_missing_statement_fields
 
 
 logger = logging.getLogger(__name__)
+
+
+# Un appel Ollama n'est évité que lorsque toutes les données normalement
+# demandées au modèle sont déjà retrouvées avec une citation exploitable.
+# Cette règle volontairement conservatrice accélère les documents lisibles
+# sans réduire les informations produites pour les documents difficiles.
+_DETERMINISTIC_REQUIRED_FIELDS = {
+    "bulletin": (
+        "nom", "prenom", "employeur", "poste",
+        "date_embauche", "periode", "salaire_net",
+    ),
+    "releve": ("banque", "periode_debut", "periode_fin"),
+}
+
+
+def _proven_field(field: Any, minimum_confidence: float = 0.70) -> bool:
+    """Vrai si une valeur déterministe possède une preuve OCR suffisante."""
+
+    if not isinstance(field, dict) or field.get("value") in (None, "", []):
+        return False
+    try:
+        confidence = float(field.get("confidence"))
+    except (TypeError, ValueError):
+        return False
+    source = field.get("source")
+    return (
+        confidence >= minimum_confidence
+        and isinstance(source, dict)
+        and type(source.get("page")) is int
+        and bool(str(source.get("quote") or "").strip())
+    )
 
 
 class DocumentExtractor:
@@ -281,6 +314,44 @@ class DocumentExtractor:
     # EXTRACTION COMPLÈTE
     # =====================================================
 
+    @staticmethod
+    def _deterministic_extract(
+        ocr_text: str,
+        document_type: str,
+    ) -> Dict[str, Any]:
+        """Extraire d'abord les champs prouvables sans modèle génératif."""
+
+        seed = {"document_type": document_type}
+        if document_type == "carte_identite":
+            return fill_missing_identity_fields(seed, ocr_text)
+        if document_type == "bulletin":
+            return fill_missing_payroll_fields(seed, ocr_text)
+        if document_type == "releve":
+            return fill_missing_statement_fields(seed, ocr_text)
+        return seed
+
+    @staticmethod
+    def _deterministic_result_is_complete(
+        data: Dict[str, Any],
+        document_type: str,
+    ) -> bool:
+        required = _DETERMINISTIC_REQUIRED_FIELDS.get(document_type)
+        return bool(required) and all(_proven_field(data.get(name)) for name in required)
+
+    @staticmethod
+    def _complete_with_deterministic_rules(
+        data: Dict[str, Any],
+        ocr_text: str,
+        document_type: str,
+    ) -> Dict[str, Any]:
+        if document_type == "carte_identite":
+            return fill_missing_identity_fields(data, ocr_text)
+        if document_type == "bulletin":
+            return fill_missing_payroll_fields(data, ocr_text)
+        if document_type == "releve":
+            return fill_missing_statement_fields(data, ocr_text)
+        return data
+
     def extract(
         self,
         ocr_text: str,
@@ -300,66 +371,32 @@ class DocumentExtractor:
             document_type,
         )
 
-        # -------------------------------------------------
-        # 1. Récupérer le schéma correspondant au document
-        # -------------------------------------------------
-
-        llm_schema = self.get_llm_schema(
-            document_type
-        )
-
-        # -------------------------------------------------
-        # 2. Construire le prompt
-        # -------------------------------------------------
-
-        prompt = self.build_prompt(
-            document_type=document_type,
-            ocr_text=ocr_text,
-        )
-
-        # -------------------------------------------------
-        # 3. Appeler Ollama avec le schéma strict
-        # -------------------------------------------------
-
-        response = self.call_llm(
-            prompt=prompt,
-            schema=llm_schema,
-        )
-
-        # -------------------------------------------------
-        # 4. Convertir la réponse JSON
-        # -------------------------------------------------
-
-        data = self.parse_json(
-            response
-        )
-
-        # -------------------------------------------------
-        # 5. Appliquer les extracteurs déterministes
-        # -------------------------------------------------
-        #
-        # Le LLM reste l'extracteur principal.
-        # Les fallbacks complètent ou corrigent les champs
-        # qui peuvent être retrouvés de manière fiable dans
-        # le texte OCR.
-        # -------------------------------------------------
-
-        if document_type == "carte_identite":
-            data = fill_missing_identity_fields(
-                data,
-                ocr_text,
+        # Les règles rapides passent avant Ollama. Le modèle n'est sauté que
+        # si elles ont retrouvé l'intégralité du schéma utile avec une preuve
+        # OCR. Dans tous les autres cas, l'ancien chemin LLM reste inchangé.
+        deterministic = self._deterministic_extract(ocr_text, document_type)
+        if self._deterministic_result_is_complete(deterministic, document_type):
+            logger.info(
+                "[DocumentExtractor] Extraction déterministe complète : "
+                "appel Ollama évité pour %s",
+                document_type,
             )
-
-        elif document_type == "bulletin":
-            data = fill_missing_payroll_fields(
-                data,
-                ocr_text,
+            data = deterministic
+        else:
+            llm_schema = self.get_llm_schema(document_type)
+            prompt = self.build_prompt(
+                document_type=document_type,
+                ocr_text=ocr_text,
             )
-
-        elif document_type == "releve":
-            data = fill_missing_statement_fields(
+            response = self.call_llm(
+                prompt=prompt,
+                schema=llm_schema,
+            )
+            data = self.parse_json(response)
+            data = self._complete_with_deterministic_rules(
                 data,
                 ocr_text,
+                document_type,
             )
 
         # -------------------------------------------------
@@ -382,7 +419,8 @@ class DocumentExtractor:
     # EXTRACTION VERS JSON
     # =====================================================
 
-    def extract_json(
+    @lru_cache(maxsize=32)
+    def _extract_json_cached(
         self,
         ocr_text: str,
         document_type: str,
@@ -405,6 +443,27 @@ class DocumentExtractor:
             "confidences": extract_confidences(result),
             "raw": result.model_dump(),
         }
+
+    def extract_json(
+        self,
+        ocr_text: str,
+        document_type: str,
+    ) -> Dict[str, Any]:
+        """Résultat isolé, mis en cache pour un même contenu OCR.
+
+        La copie profonde est indispensable : ``ExtractionAgent`` enrichit
+        ensuite les relevés avec les métriques financières et la provenance.
+        Sans copie, ces modifications contamineraient une future lecture du
+        cache.
+        """
+
+        before = self._extract_json_cached.cache_info().hits
+        result = self._extract_json_cached(ocr_text, document_type)
+        if self._extract_json_cached.cache_info().hits > before:
+            logger.info(
+                "[DocumentExtractor] Résultat d'extraction réutilisé depuis le cache"
+            )
+        return deepcopy(result)
 
     def extract_statement_transactions_fallback(
         self,

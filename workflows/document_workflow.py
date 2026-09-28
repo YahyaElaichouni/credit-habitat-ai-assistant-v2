@@ -18,7 +18,10 @@ l'utilisateur humain.
 import logging
 import hashlib
 import inspect
+from collections import OrderedDict
+from copy import deepcopy
 from pathlib import Path
+from threading import RLock
 from typing import Any, Dict, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -81,6 +84,32 @@ _ocr_agent = None
 _extraction_agent = None
 _validation_agent = None
 
+# Cache mémoire borné des pages OCR. La clé repose sur le contenu réel du
+# fichier et non sur son nom temporaire : redéposer le même document ne relance
+# donc pas PaddleOCR. La validation et l'audit restent exécutés à chaque fois.
+_OCR_CACHE_MAXSIZE = 24
+_ocr_pages_cache = OrderedDict()
+_ocr_pages_cache_lock = RLock()
+
+
+def _cached_ocr_pages(document_sha256: str, document_type: str):
+    key = (document_sha256, document_type)
+    with _ocr_pages_cache_lock:
+        pages = _ocr_pages_cache.get(key)
+        if pages is None:
+            return None
+        _ocr_pages_cache.move_to_end(key)
+        return deepcopy(pages)
+
+
+def _remember_ocr_pages(document_sha256: str, document_type: str, pages) -> None:
+    key = (document_sha256, document_type)
+    with _ocr_pages_cache_lock:
+        _ocr_pages_cache[key] = deepcopy(pages)
+        _ocr_pages_cache.move_to_end(key)
+        while len(_ocr_pages_cache) > _OCR_CACHE_MAXSIZE:
+            _ocr_pages_cache.popitem(last=False)
+
 
 def get_ocr_agent() -> OCRAgent:
     global _ocr_agent
@@ -128,6 +157,21 @@ def ocr_node(state: DocumentState) -> Dict[str, Any]:
 
     logger.info("[Workflow] Étape OCR : %s", state["pdf_path"])
 
+    document_sha256 = hashlib.sha256(
+        Path(state["pdf_path"]).read_bytes()
+    ).hexdigest()
+    pages = _cached_ocr_pages(document_sha256, state["document_type"])
+    if pages is not None:
+        logger.info(
+            "[Workflow] OCR réutilisé depuis le cache SHA-256 (%s…)",
+            document_sha256[:12],
+        )
+        return {
+            "ocr_text": page_text(pages),
+            "ocr_pages": pages,
+            "document_sha256": document_sha256,
+        }
+
     ocr_agent = get_ocr_agent()
     # Compatibilité avec les doubles de test et les anciennes implémentations
     # qui ne connaissent que execute_pages(path).
@@ -137,8 +181,12 @@ def ocr_node(state: DocumentState) -> Dict[str, Any]:
         )
     else:
         pages = ocr_agent.execute_pages(state["pdf_path"])
-    return {"ocr_text": page_text(pages), "ocr_pages": pages,
-            "document_sha256": hashlib.sha256(Path(state["pdf_path"]).read_bytes()).hexdigest()}
+    _remember_ocr_pages(document_sha256, state["document_type"], pages)
+    return {
+        "ocr_text": page_text(pages),
+        "ocr_pages": pages,
+        "document_sha256": document_sha256,
+    }
 
 
 def extraction_node(state: DocumentState) -> Dict[str, Any]:

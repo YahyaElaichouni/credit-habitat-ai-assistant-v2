@@ -407,7 +407,10 @@ def render_simulation(
     project_years = max(5, min(30, int(project.get("duration_years") or 20)))
     years_key = f"{key_prefix}_years"
     duration_source_key = f"{years_key}_project_source"
-    if st.session_state.get(duration_source_key) != project_years:
+    if (
+        years_key not in st.session_state
+        or st.session_state.get(duration_source_key) != project_years
+    ):
         st.session_state[years_key] = project_years
         st.session_state[duration_source_key] = project_years
 
@@ -415,7 +418,6 @@ def render_simulation(
         "Durée souhaitée",
         min_value=5,
         max_value=30,
-        value=project_years,
         format="%d ans",
         key=years_key,
     )

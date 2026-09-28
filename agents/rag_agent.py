@@ -71,6 +71,7 @@ class RAGAgent:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
+                keep_alive="30m",
             )
         except Exception as e:
             raise RuntimeError(

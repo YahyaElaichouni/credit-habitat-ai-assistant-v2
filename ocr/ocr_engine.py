@@ -24,6 +24,50 @@ from ocr.preprocessing import ImagePreprocessor
 logger = logging.getLogger(__name__)
 
 
+def _onnx_engine_config():
+    """Employer CUDA quand il est disponible, sinon rester utilisable sur CPU."""
+    try:
+        import onnxruntime as ort
+
+        available = ort.get_available_providers()
+    except Exception as exc:
+        logger.warning(
+            "ONNX Runtime indisponible lors de la détection du GPU : %s",
+            exc,
+        )
+        available = []
+
+    if "CUDAExecutionProvider" in available:
+        try:
+            # Les wheels ``onnxruntime-gpu[cuda,cudnn]`` installent les DLL
+            # NVIDIA dans site-packages, qui n'est pas ajouté au PATH par
+            # Windows. Le préchargement doit donc précéder la création des
+            # sessions PaddleOCR ; sinon ONNX annonce CUDA mais échoue ensuite
+            # à créer le provider et retombe silencieusement sur le CPU.
+            ort.preload_dlls(directory="")
+            logger.info(
+                "DLL CUDA/cuDNN préchargées — PaddleOCR utilisera "
+                "CUDAExecutionProvider (GPU 0)"
+            )
+            return {
+                "device_type": "gpu",
+                "device_id": 0,
+                "providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
+            }
+        except Exception as exc:
+            logger.warning(
+                "Préchargement CUDA/cuDNN impossible (%s) ; "
+                "PaddleOCR utilisera le CPU",
+                exc,
+            )
+
+    logger.info("PaddleOCR utilisera CPUExecutionProvider")
+    return {
+        "device_type": "cpu",
+        "providers": ["CPUExecutionProvider"],
+    }
+
+
 class OCREngine:
 
     def __init__(self):
@@ -31,22 +75,11 @@ class OCREngine:
         logger.info("Chargement de PaddleOCR...")
 
         self.reader = PaddleOCR(
-            # Les tableaux du bulletin et du relevé comportent de petits
-            # caractères : le modèle mobile les perdait. On conserve donc le
-            # modèle précis et on gagne le temps sur la résolution d'entrée
-            # (voir HybridReader), sans sacrifier les champs métier.
             lang="fr",
             ocr_version="PP-OCRv6",
             use_textline_orientation=False,
             engine="onnxruntime",
-            # Ces deux étapes ajoutent chacune un modèle d'inférence
-            # supplémentaire par page (PP-LCNet_x1_0_doc_ori, UVDoc) et
-            # ne sont utiles que pour des scans de travers ou déformés.
-            # Pour des documents déjà à plat et correctement orientés
-            # (cas courant pour un scan/photo de CIN, bulletin...), les
-            # désactiver réduit sensiblement le temps d'OCR par page.
-            # Réactivez-les si vos documents de test sont réellement
-            # tournés ou déformés.
+            engine_config=_onnx_engine_config(),
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
         )
@@ -69,6 +102,29 @@ class OCREngine:
         (isolé ici pour que le reste du code n'en dépende pas).
         """
 
+        height, width = image.shape[:2]
+        original_lines = None
+
+        # Les CNIE récentes ont des fonds colorés et des motifs de sécurité :
+        # dans les jeux de test, la couleur gagne presque toujours contre la
+        # binarisation. On commence donc par elle et on ne paie le coût d'une
+        # seconde lecture que si les preuves identitaires restent pauvres.
+        if document_type == "carte_identite":
+            original = image
+            if original.ndim == 2:
+                original = cv2.cvtColor(original, cv2.COLOR_GRAY2RGB)
+            original_lines = self._prediction_to_lines(
+                self.reader.predict(original)
+            )
+            if self._identity_color_is_sufficient(original_lines):
+                logger.info(
+                    "CNIE : lecture couleur suffisante, binarisation évitée"
+                )
+                return original_lines
+            logger.info(
+                "CNIE : preuves couleur incomplètes, comparaison avec la binarisation"
+            )
+
         processed = self.preprocessor.preprocess(image)
 
         # Le pipeline interne de PaddleOCR (correction d'orientation,
@@ -87,14 +143,24 @@ class OCREngine:
         # tableaux avec une police minuscule. Ne relire que la partie de page
         # susceptible de contenir les repères absents ; une relecture complète
         # reste disponible si cette passe ciblée n'apporte aucune amélioration.
-        height, width = image.shape[:2]
         if document_type == "bulletin" and max(height, width) < 1500:
-            expected = ("PERIODE", "MATRICULE", "DATE D'EMBAUCHE", "FONCTION", "NET A PAYER")
             normalized = processed_text.replace("É", "E").replace("À", "A")
+            aliases = {
+                "PERIODE": ("PERIODE", "PERIOD", "MOIS DE PAIE"),
+                "DATE D'EMBAUCHE": (
+                    "DATE D'EMBAUCHE", "DATE EMBAUCHE", "DATE D'ENTREE",
+                    "DATE ENTREE", "ENTREE:", "HIRE DATE", "START DATE",
+                ),
+                "NET A PAYER": (
+                    "NET A PAYER", "NET PAYE", "SALAIRE NET", "NET PAY",
+                ),
+            }
             missing_markers = tuple(
-                marker for marker in expected if marker not in normalized
+                marker
+                for marker, variants in aliases.items()
+                if not any(variant in normalized for variant in variants)
             )
-            if len(missing_markers) >= 3:
+            if missing_markers:
                 initial_score = self._business_document_score(
                     processed_lines, "bulletin"
                 )
@@ -139,7 +205,6 @@ class OCREngine:
         # des caractères lors de la binarisation. Pour ces pages seulement,
         # on compare avec la lecture de l'image originale et on conserve la
         # version qui contient le plus de repères identitaires utiles.
-        height, width = image.shape[:2]
         identity_hint = (
             document_type == "carte_identite"
             or "CARTE NATIONALE" in processed_text
@@ -149,10 +214,13 @@ class OCREngine:
             or width / max(height, 1) >= 1.35
         )
         if identity_hint:
-            original = image
-            if original.ndim == 2:
-                original = cv2.cvtColor(original, cv2.COLOR_GRAY2RGB)
-            original_lines = self._prediction_to_lines(self.reader.predict(original))
+            if original_lines is None:
+                original = image
+                if original.ndim == 2:
+                    original = cv2.cvtColor(original, cv2.COLOR_GRAY2RGB)
+                original_lines = self._prediction_to_lines(
+                    self.reader.predict(original)
+                )
             if self._identity_score(original_lines) > self._identity_score(processed_lines):
                 logger.info("CNIE : lecture couleur originale retenue plutôt que la binarisation")
                 return original_lines
@@ -226,7 +294,12 @@ class OCREngine:
             # traits voisins qui rendent les petits montants CIH difficiles à
             # reconnaître. Les coordonnées sont remappées sur la page afin de
             # rattacher chaque montant à sa ligne d'opération lors du rendu.
-            if document_type == "releve":
+            if (
+                document_type == "releve"
+                and self._statement_credit_pass_needed(
+                    processed_lines, image.shape[1]
+                )
+            ):
                 credit_lines = self._read_statement_credit_column(
                     image, processed_lines
                 )
@@ -234,6 +307,10 @@ class OCREngine:
                     processed_lines = self._merge_statement_credit_lines(
                         processed_lines, credit_lines
                     )
+            elif document_type == "releve":
+                logger.info(
+                    "Relevé : montants crédit déjà associés, passe ciblée évitée"
+                )
 
         return processed_lines
 
@@ -279,6 +356,51 @@ class OCREngine:
                 if x1 - x0 >= 20:
                     return x0, x1, y0
         return None
+
+    @classmethod
+    def _statement_credit_pass_needed(cls, lines, image_width):
+        """Relire CREDIT seulement si une entrée détectée n'a pas de montant."""
+        geometry = cls._statement_credit_geometry(lines, image_width)
+        if geometry is None:
+            return False
+        x0, x1, y0 = geometry
+        incoming_pattern = re.compile(
+            r"\b(?:(?:virement|virt)\s+(?:recu|en\s+votre\s+faveur)|"
+            r"reception\s+d\s+un\s+virement|versement|remise\s+(?:de\s+)?cheque)\b",
+            re.I,
+        )
+        amount_pattern = re.compile(
+            r"^[+-]?\s*\d[\d .\u00a0:]*[,.]\s*\d{2}\s*(?:MAD|DH|DHS)?$",
+            re.I,
+        )
+        incoming_rows = []
+        credit_rows = []
+        for item in lines or []:
+            text = str(item.get("text") or "").strip()
+            normalized_text = unicodedata.normalize("NFKD", text).encode(
+                "ascii", "ignore"
+            ).decode()
+            normalized_text = re.sub(r"[^a-zA-Z0-9]+", " ", normalized_text)
+            center = cls._box_center(item.get("bbox"))
+            bounds = cls._box_bounds(item.get("bbox"))
+            if center is None or bounds is None or center[1] <= y0:
+                continue
+            row = (center[1], max(bounds[3] - bounds[1], 1.0))
+            if incoming_pattern.search(normalized_text):
+                incoming_rows.append(row)
+            if x0 <= center[0] <= x1 and amount_pattern.fullmatch(text):
+                credit_rows.append(row)
+
+        if not incoming_rows:
+            return False
+        for incoming_y, incoming_height in incoming_rows:
+            if not any(
+                abs(incoming_y - amount_y)
+                <= max(18.0, incoming_height * 2.2, amount_height * 2.2)
+                for amount_y, amount_height in credit_rows
+            ):
+                return True
+        return False
 
     def _read_statement_credit_column(self, image, reference_lines):
         """OCR agrandi de toutes les cellules monétaires de la colonne crédit."""
@@ -466,7 +588,7 @@ class OCREngine:
         missing = set(missing_markers or ())
         if missing:
             upper_markers = {
-                "PERIODE", "MATRICULE", "DATE D'EMBAUCHE", "FONCTION"
+                "PERIODE", "DATE D'EMBAUCHE"
             }
             regions = []
             if missing & upper_markers:
@@ -480,11 +602,29 @@ class OCREngine:
         else:
             regions = ((0.00, 0.38), (0.32, 0.82), (0.74, 1.00))
         collected = []
-        scale = 2.2
+        combined_pass = len(regions) == 2
+        if combined_pass:
+            # Lorsque le haut et le bas sont tous deux nécessaires, leurs deux
+            # grandes zones se chevauchent fortement. Une seule passe plafonnée
+            # traite moins de pixels et évite une seconde inférence PaddleOCR.
+            regions = ((0.00, 1.00),)
         for start_ratio, end_ratio in regions:
             y0, y1 = int(height * start_ratio), int(height * end_ratio)
             crop = image[y0:y1, :]
-            enlarged = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            # Le plafond évite les images OCR surdimensionnées lorsque le
+            # document source est déjà assez grand.
+            longest_side = max(crop.shape[:2])
+            max_scale = 1.6 if combined_pass else 2.2
+            max_side = 1600.0 if combined_pass else 1500.0
+            scale = min(max_scale, max_side / max(longest_side, 1))
+            scale = max(scale, 1.0)
+            enlarged = cv2.resize(
+                crop,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=cv2.INTER_CUBIC,
+            )
             lines = self._prediction_to_lines(self.reader.predict(enlarged))
             for line in lines:
                 box = line.get("bbox")
@@ -611,6 +751,27 @@ class OCREngine:
         score += 2 * len(__import__("re").findall(r"\b[A-Z]{1,2}\d{5,8}\b", text))
         score += len(__import__("re").findall(r"\b\d{2}[./-]\d{2}[./-]\d{4}\b", text))
         return score
+
+    @classmethod
+    def _identity_color_is_sufficient(cls, lines):
+        """Évite la variante binarisée seulement avec une vraie preuve CNIE."""
+
+        text = " ".join(str(line.get("text") or "") for line in lines).upper()
+        normalized = unicodedata.normalize("NFKD", text).encode(
+            "ascii", "ignore"
+        ).decode()
+        has_identity_marker = any(marker in normalized for marker in (
+            "CARTE NATIONALE", "IDMAR", "ROYAUME DU MAROC", "IDENTITE",
+        ))
+        has_identifier = bool(re.search(r"\b[A-Z]{1,2}\s*\d{5,8}\b", normalized))
+        has_full_date = bool(re.search(r"\b\d{2}[./-]\d{2}[./-]\d{4}\b", normalized))
+        return (
+            len(normalized.strip()) >= 100
+            and has_identity_marker
+            and has_identifier
+            and has_full_date
+            and cls._identity_score(lines) >= 9.0
+        )
 
     @staticmethod
     def _business_document_score(lines, document_type):

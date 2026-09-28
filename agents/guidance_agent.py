@@ -387,6 +387,7 @@ Historique récent : {json.dumps(recent_history, ensure_ascii=False)}
                     {"role": "user", "content": prompt},
                 ],
                 format="json",
+                keep_alive="30m",
                 options={"temperature": 0},
             )
             parsed = json.loads(response["message"]["content"])

@@ -1093,12 +1093,12 @@ elif st.session_state.page == "Accueil":
     if not st.session_state.account_created:
         render_cam_hero(
             "Crédit habitat · Espace client",
-            "Commençons votre projet habitat",
-            "Créez votre espace personnel pour sauvegarder vos justificatifs, "
-            "reprendre votre parcours à tout moment et affiner votre simulation "
-            "en toute autonomie.",
+            "Votre projet immobilier commence par une vision claire.",
+            "Estimez vos possibilités de financement, préparez vos justificatifs "
+            "avec l’aide de l’IA et avancez étape par étape. Un espace unique "
+            "pour mieux préparer votre projet habitat.",
         )
-        render_home_assurance_strip()
+        render_home_assurance_strip(on_start=render_customer_access_dialog)
         st.stop()
 
     client_docs = current_client_documents()
