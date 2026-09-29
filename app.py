@@ -1411,7 +1411,7 @@ elif st.session_state.page == "Extraction":
         action_left, action_right = st.columns(2)
         with action_left:
             if st.button(
-                "Vérifier mes 5 informations",
+                "Vérifier mes  informations",
                 icon=":material/fact_check:",
                 type="primary",
                 width="stretch",
